@@ -50,7 +50,7 @@ def optimize(loss, initial, iterations, learning_rate):
     return best, np.asarray(history)
 
 
-def save_results(target, initial, frames, history, output):
+def save_results(target, initial, frames, history, output, parameters=None, times=None):
     """Save a comparable color scale, loss trace, and all raw snapshots."""
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -58,12 +58,17 @@ def save_results(target, initial, frames, history, output):
     if not np.isfinite(frames).all():
         raise FloatingPointError('Nonfinite simulation output.')
     losses = np.mean((frames-target)**2, axis=(-2, -1))
-    np.savez_compressed(output/'results.npz', target=target, initial=initial,
-                        frames=frames, loss=history, frame_mse=losses)
+    data = dict(target=target, initial=initial, frames=frames, loss=history, frame_mse=losses)
+    if times is not None:
+        data['times'] = np.asarray(times)
+    if parameters is not None:
+        for i, leaf in enumerate(jax.tree_util.tree_leaves(parameters)):
+            data[f'parameters_{i}'] = np.asarray(leaf)
+    np.savez_compressed(output/'results.npz', **data)
     indices = np.linspace(0, len(frames)-1, 3).astype(int)
     fig, axes = plt.subplots(1, 5, figsize=(14, 3), constrained_layout=True)
     for ax, data, title in zip(axes, [target, initial, *frames[indices]],
-                               ['Target', 'Optimized initial', *[f'Frame {i}' for i in indices]]):
+                               ['Target', 'Optimized initial', *[f't={float(times[i]):.3g}' if times is not None else f'Frame {i}' for i in indices]]):
         ax.imshow(data, cmap='inferno', vmin=target.min(), vmax=target.max())
         ax.set_title(title)
         ax.axis('off')

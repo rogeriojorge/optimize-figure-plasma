@@ -16,7 +16,8 @@ IMAGE = ROOT / "W7X-Spulen_Plasma_blau_gelb.jpg"
 SIZE, STEPS = 48, 64
 T_FINAL = 0.10
 SOUND_SPEED, VELOCITY_SCALE = 0.45, 0.22
-ITERATIONS, LEARNING_RATE = 24, 0.015
+ITERATIONS, LEARNING_RATE = 100, 0.015
+SAVED_FRAMES = 9
 OUTPUT = ROOT / "results" / "snapshot_euler"
 
 print("Loading target and preparing the periodic 2D isothermal Euler model...")
@@ -48,9 +49,12 @@ print("Optimizing initial density and velocity against the final Euler snapshot.
 start = time.time()
 parameters, history = optimize(loss, initial, ITERATIONS, LEARNING_RATE)
 all_frames = run(parameters)
-frames = jnp.stack((all_frames[0], all_frames[-1]))
+frame_indices = jnp.linspace(0, STEPS, SAVED_FRAMES).astype(jnp.int32)
+frames = all_frames[frame_indices]
+times = frame_indices * dt
 print(
     f"Euler snapshot fit finished in {time.time() - start:.1f}s; "
     f"final density MSE={float(loss(parameters)):.6g}"
 )
-save_results(target, all_frames[0], frames, history, OUTPUT)
+save_results(target, all_frames[0], frames, history, OUTPUT,
+             parameters=conserved(parameters), times=times)

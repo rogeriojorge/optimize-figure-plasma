@@ -16,7 +16,7 @@ IMAGE = ROOT / "W7X-Spulen_Plasma_blau_gelb.jpg"
 SIZE, STEPS = 48, 64
 T_FINAL = 0.10
 SOUND_SPEED, VELOCITY_SCALE = 0.45, 0.22
-ITERATIONS, LEARNING_RATE = 24, 0.015
+ITERATIONS, LEARNING_RATE = 100, 0.015
 SAVED_FRAMES = 9
 OUTPUT = ROOT / "results" / "retention_euler"
 
@@ -57,4 +57,6 @@ print(
     f"Euler retention fit finished in {time.time() - start:.1f}s; "
     f"trajectory-average density MSE={float(loss(parameters)):.6g}"
 )
-save_results(target, all_frames[0], frames, history, OUTPUT)
+times = frame_indices * dt
+save_results(target, all_frames[0], frames, history, OUTPUT,
+             parameters=conserved(parameters), times=times)

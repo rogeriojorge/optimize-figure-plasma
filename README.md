@@ -30,7 +30,7 @@ Edit the input parameters near the top of a script, including `IMAGE` for your o
 
 The snapshot examples minimize pixelwise mean squared error at a prescribed final time. The retention examples compare the initial image and many times along the trajectory, so an isolated good final snapshot is insufficient. The duration is fixed: increasing it makes retention harder, rather than allowing the optimizer to shorten the simulation. Only initial conditions are optimized; the equations continue to evolve them.
 
-Images are converted to grayscale, resized while preserving aspect ratio, padded to the simulation grid, given a small positive floor, and normalized. This is a scalar-density demonstration: RGB color is not a physical variable. The supplied W7-X illustration is a target picture, not a simulated W7-X equilibrium.
+Images are converted to inverted grayscale (dark artwork becomes high density), resized while preserving aspect ratio, padded to the simulation grid, given a small positive floor, and normalized. This is a scalar-density demonstration: RGB color is not a physical variable. The supplied W7-X illustration is a target picture, not a simulated W7-X equilibrium.
 
 Euler uses a conservative periodic finite-volume discretization with isothermal pressure, Rusanov fluxes, and SSP-RK2 time integration. The kinetic scripts call [SPECTRAX](https://github.com/uwplasma/SPECTRAX) and [JAX-in-Cell](https://github.com/uwplasma/JAX-in-Cell). Their two image axes represent one position and one velocity, as in a phase-space plot.
 
