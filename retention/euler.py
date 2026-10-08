@@ -1,130 +1,60 @@
-"""Fit a 2D isothermal Euler state that retains the target over its trajectory."""
-
+"""Optimize an initial fluid state to retain an image over time."""
 from pathlib import Path
+from functools import partial
 import sys
-import time
-
 import jax
-jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from helpers import euler_evolve, load_target, optimize, save_results  # noqa: E402
+from helpers import (StageCheckpoint, density_checks, gradient_check, load_target,
+                     optimize, save_euler_fit, euler_evolve)
 
-IMAGE = ROOT / "W7X-Spulen_Plasma_blau_gelb.jpg"
+IMAGE, OUTPUT = ROOT / 'W7X-Spulen_Plasma_blau_gelb.jpg', ROOT / 'results' / 'retention_euler'
 SIZE, STEPS = 128, 192
 HORIZONS = (0.10, 0.20, 0.35, 0.50)
-ITERATIONS_PER_HORIZON = (30, 40, 60, 100)
-SOUND_SPEED, VELOCITY_SCALE = 0.45, 0.80
-LEARNING_RATE = 0.015
-OUTPUT = ROOT / "results" / "retention_euler"
-CHECKPOINTS = OUTPUT / "checkpoints"
-CHECKPOINTS.mkdir(parents=True, exist_ok=True)
+ITERATIONS = (30, 40, 60, 100)
+SOUND_SPEED, VELOCITY_SCALE, TARGET_FLOOR = 0.45, 0.80, 0.05
+OPTIMIZER, LEARNING_RATE = 'adam', 0.015
+INITIAL_WEIGHT, POLISH_ITERATIONS, POLISH_OPTIMIZER = 0.5, 60, 'l-bfgs-b'
+EXTENSION_FACTOR, MOVIE_SECONDS, CHECKS, RESUME = 1.5, 6.0, True, False
 
-print("Loading target and preparing the periodic 2D isothermal Euler model...")
-target = load_target(IMAGE, SIZE)
+target = load_target(IMAGE, SIZE, floor=TARGET_FLOOR)
 initial = jnp.stack((jnp.log(target), jnp.zeros_like(target), jnp.zeros_like(target)))
-parameters = initial
-history_parts, horizon_losses = [], []
-stage_min_density, stage_mass_drift = [], []
-start = time.time()
-print("Optimizing image retention at progressively longer horizons...")
-for horizon, iterations in zip(HORIZONS, ITERATIONS_PER_HORIZON):
-    stage_steps = max(32, round(STEPS * horizon / HORIZONS[-1]))
-    dt = horizon / stage_steps
+evolve = partial(euler_evolve, sound_speed=SOUND_SPEED)
 
-    def conserved(p):
-        """Map log density and bounded velocities to conservative Euler variables."""
-        density = jnp.exp(p[0])
-        vx = VELOCITY_SCALE * jnp.tanh(p[1])
-        vy = VELOCITY_SCALE * jnp.tanh(p[2])
-        return jnp.stack((density, density * vx, density * vy))
+def conserved(parameters):
+    rho = jnp.exp(parameters[0])
+    vx, vy = VELOCITY_SCALE*jnp.tanh(parameters[1:])
+    return jnp.stack((rho, rho*vx, rho*vy))
 
-    def run(p):
-        return euler_evolve(conserved(p), stage_steps, dt, SOUND_SPEED)
+settings = dict(size=SIZE, steps=STEPS, horizons=HORIZONS, iterations=ITERATIONS,
+                sound_speed=SOUND_SPEED, velocity_scale=VELOCITY_SCALE,
+                optimizer=OPTIMIZER, learning_rate=LEARNING_RATE, initial_weight=INITIAL_WEIGHT,
+                polish_iterations=POLISH_ITERATIONS, polish_optimizer=POLISH_OPTIMIZER)
+checkpoint = StageCheckpoint(OUTPUT, initial, target, settings, resume=RESUME)
+parameters = checkpoint.parameters
+for stage, (horizon, iterations) in enumerate(zip(HORIZONS, ITERATIONS)):
+    stage_steps = max(min(32, STEPS), round(STEPS*horizon/HORIZONS[-1]))
+    stage_dt = horizon/stage_steps
 
-    def loss(p):
-        densities = run(p)
-        trajectory_error = jnp.mean(jnp.square(densities - target[None, :, :]))
-        initial_error = jnp.mean(jnp.square(densities[0] - target))
-        return trajectory_error + 0.5 * initial_error
+    def loss(parameters):
+        frames = evolve(conserved(parameters), stage_steps, stage_dt)
+        return jnp.mean((frames-target)**2) + INITIAL_WEIGHT*jnp.mean((frames[0]-target)**2)
 
-    print(f"Horizon T={horizon:g}: {iterations} Adam iterations")
-    parameters, stage_history = optimize(loss, parameters, iterations, LEARNING_RATE)
-    if horizon == HORIZONS[-1]:
-        print("Polishing the final retention horizon with 60 L-BFGS-B iterations")
-        parameters, polish_history = optimize(
-            loss, parameters, 60, LEARNING_RATE, method="l-bfgs-b"
-        )
-        stage_history = np.concatenate((stage_history, polish_history[1:]))
-    history_parts.append(stage_history)
-    horizon_losses.append(float(loss(parameters)))
-    stage_frames = np.asarray(run(parameters))
-    stage_min_density.append(float(stage_frames.min()))
-    stage_mass_drift.append(float(np.max(np.abs(stage_frames.mean(axis=(-2, -1)) - stage_frames[0].mean()))))
-    if stage_min_density[-1] <= 0:
-        raise FloatingPointError(f"Negative density at retention horizon T={horizon:g}.")
-    print(f"  minimum density={stage_min_density[-1]:.6g}, mass drift={stage_mass_drift[-1]:.3g}")
-    np.savez_compressed(
-        CHECKPOINTS / f"T_{horizon:g}.npz", parameters=np.asarray(parameters),
-        history=np.concatenate(history_parts), horizon=horizon, steps=stage_steps,
-        dt=dt, loss=horizon_losses[-1], min_density=stage_min_density[-1],
-        mass_drift=stage_mass_drift[-1],
-    )
+    if stage < checkpoint.next_stage:
+        continue
+    print(f'Horizon T={horizon:g}: {iterations} {OPTIMIZER} iterations', flush=True)
+    parameters, history = optimize(loss, parameters, iterations, LEARNING_RATE, method=OPTIMIZER)
+    if stage == len(HORIZONS)-1 and POLISH_ITERATIONS:
+        parameters, polish = optimize(loss, parameters, POLISH_ITERATIONS, LEARNING_RATE, method=POLISH_OPTIMIZER)
+        history = np.r_[history, polish[1:]]
+    density_checks(evolve(conserved(parameters), stage_steps, stage_dt), f'T={horizon:g}')
+    checkpoint.save(parameters, history)
 
-T_FINAL = HORIZONS[-1]
-dt = T_FINAL / STEPS
-all_frames = run(parameters)
-baseline_frames = run(initial)
-times = jnp.arange(STEPS + 1) * dt
-history = np.concatenate(history_parts)
-gradient = jax.value_and_grad(loss)(parameters)[1]
-direction = jnp.sin(jnp.arange(parameters.size, dtype=parameters.dtype)).reshape(parameters.shape)
-direction = direction / jnp.linalg.norm(direction)
-ad_directional = float(jnp.vdot(gradient, direction))
-epsilon = 1e-4
-fd_directional = float((loss(parameters + epsilon * direction) - loss(parameters - epsilon * direction)) / (2 * epsilon))
-gradient_check_error = abs(ad_directional - fd_directional) / max(abs(ad_directional), abs(fd_directional), 1e-12)
-fine_frames = euler_evolve(conserved(parameters), 2 * STEPS, dt / 2, SOUND_SPEED)
-replay_difference = np.asarray(fine_frames[-1] - all_frames[-1])
-fine_replay_rms = float(np.sqrt(np.mean(replay_difference**2)))
-fine_replay_max = float(np.max(np.abs(replay_difference)))
-fine_min_density = float(np.min(fine_frames))
-fine_mass_drift = float(np.max(np.abs(np.asarray(fine_frames).mean(axis=(-2, -1)) - np.asarray(fine_frames[0]).mean())))
-if fine_min_density <= 0:
-    raise FloatingPointError("Negative density during the twice-fine Euler replay.")
-extended_steps = round(1.5 * STEPS)
-extended_frames = euler_evolve(conserved(parameters), extended_steps, dt, SOUND_SPEED)
-extended_baseline = euler_evolve(conserved(initial), extended_steps, dt, SOUND_SPEED)
-extended_min_density = float(np.min(extended_frames))
-extended_mass_drift = float(np.max(np.abs(
-    np.asarray(extended_frames).mean(axis=(-2, -1)) - np.asarray(extended_frames[0]).mean()
-)))
-if extended_min_density <= 0:
-    raise FloatingPointError("Negative density during the 1.5T Euler retention trajectory.")
-print(
-    f"Euler retention fit finished in {time.time() - start:.1f}s; "
-    f"trajectory-average density MSE={horizon_losses[-1]:.6g}; AD/FD={gradient_check_error:.3g}; "
-    f"fine-step endpoint RMS={fine_replay_rms:.3g}"
-)
-save_results(
-    target, all_frames[0], all_frames, history, OUTPUT,
-    parameters=conserved(parameters), times=times, baseline=baseline_frames,
-    extent=(0, 2 * jnp.pi, 0, 2 * jnp.pi), labels=("x", "y"),
-    title="Isothermal Euler · retention",
-    stage_lengths=[len(part) for part in history_parts], stage_times=HORIZONS,
-    extended_frames=extended_frames, extended_times=np.arange(extended_steps + 1) * dt,
-    extended_baseline=extended_baseline,
-    metadata={"extended_min_density": extended_min_density,
-              "extended_mass_drift": extended_mass_drift,
-              "stage_min_density": np.asarray(stage_min_density),
-              "stage_mass_drift": np.asarray(stage_mass_drift),
-              "horizon_final_losses": np.asarray(horizon_losses),
-              "fine_replay_endpoint_rms": fine_replay_rms,
-              "fine_replay_endpoint_max": fine_replay_max,
-              "fine_replay_min_density": fine_min_density,
-              "fine_replay_mass_drift": fine_mass_drift,
-              "gradient_check_error": gradient_check_error},
-)
+metadata = {'gradient_check_error': gradient_check(loss, parameters, epsilon=1e-4)} if CHECKS else {}
+save_euler_fit(target, conserved(parameters), conserved(initial), evolve, checkpoint.history, OUTPUT,
+    steps=STEPS, dt=HORIZONS[-1]/STEPS, horizons=HORIZONS, stage_lengths=checkpoint.lengths,
+    title='Isothermal Euler · retention', extent=(0, 2*np.pi, 0, 2*np.pi),
+    extension_factor=EXTENSION_FACTOR, movie_seconds=MOVIE_SECONDS, checks=CHECKS, metadata=metadata)

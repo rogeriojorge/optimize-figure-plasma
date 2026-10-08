@@ -95,13 +95,92 @@ def optimize(loss, initial, iterations, learning_rate, method="adam"):
     return best, np.asarray(history)
 
 
+class StageCheckpoint:
+    """Atomic, settings-checked checkpoints for horizon continuation."""
+
+    def __init__(self, output, initial, target, settings, resume=False):
+        import hashlib
+        import json
+        horizons = np.asarray(settings['horizons'])
+        if len(horizons) != len(settings['iterations']) or np.any(horizons <= 0) or np.any(np.diff(horizons) <= 0):
+            raise ValueError('Use increasing positive horizons and one iteration count per stage.')
+        if 'rates' in settings and len(settings['rates']) != len(horizons):
+            raise ValueError('Use one learning rate per horizon stage.')
+        self.path = Path(output) / 'checkpoint.npz'
+        self.parameters, self.parts, self.next_stage = initial, [], 0
+        display_keys = {'save_stride', 'movie_seconds', 'extension_factor', 'extended_final_time',
+                        'extended_frames', 'fd_epsilons', 'title'}
+        self.settings = json.dumps({k: v for k, v in settings.items() if k not in display_keys},
+                                   sort_keys=True, default=lambda v: np.asarray(v).tolist())
+        self.target_hash = hashlib.sha256(
+            np.asarray(target).tobytes() + str(np.shape(target)).encode()).hexdigest()
+        if resume and not self.path.exists():
+            raise FileNotFoundError('No checkpoint.npz; start fresh with RESUME=False or migrate an older checkpoint.')
+        if resume:
+            with np.load(self.path) as saved:
+                if str(saved['settings']) != self.settings or str(saved['target_hash']) != self.target_hash:
+                    raise ValueError('Checkpoint settings or target differ; set RESUME=False for a fresh fit.')
+                if saved['parameters'].shape != np.shape(initial):
+                    raise ValueError('Checkpoint initial-condition shape differs from this model.')
+                self.parameters = jnp.asarray(saved['parameters'])
+                lengths = saved['stage_lengths'].astype(int)
+                if lengths.sum() != len(saved['history']) or np.any(lengths < 1) or len(lengths) > len(horizons):
+                    raise ValueError('Checkpoint stage histories are incomplete.')
+                self.parts = list(np.split(saved['history'], np.cumsum(lengths)[:-1]))
+                self.next_stage = len(self.parts)
+            print(f'Resuming after {self.next_stage} completed horizon stages.', flush=True)
+
+    @property
+    def history(self):
+        return np.concatenate(self.parts) if self.parts else np.empty(0)
+
+    @property
+    def lengths(self):
+        return [len(part) for part in self.parts]
+
+    def save(self, parameters, history):
+        self.parameters = parameters
+        self.parts.append(np.asarray(history))
+        self.next_stage = len(self.parts)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix('.tmp.npz')
+        np.savez_compressed(temporary, parameters=np.asarray(parameters), history=self.history,
+                            stage_lengths=self.lengths, settings=self.settings, target_hash=self.target_hash)
+        temporary.replace(self.path)
+        print(f'Saved checkpoint after stage {self.next_stage}.', flush=True)
+
+
+def gradient_check(loss, parameters, epsilon=1e-5):
+    """Compare a JAX directional derivative with a centered finite difference."""
+    print('Checking the autodiff gradient against finite differences...', flush=True)
+    gradient = jax.grad(loss)(parameters)
+    direction = jnp.sin(jnp.arange(parameters.size).reshape(parameters.shape)*.37 + .2)
+    direction /= jnp.linalg.norm(direction)
+    autodiff = float(jnp.vdot(gradient, direction).real)
+    finite_difference = float((loss(parameters+epsilon*direction)-loss(parameters-epsilon*direction))/(2*epsilon))
+    error = abs(autodiff-finite_difference)/max(abs(autodiff), abs(finite_difference), 1e-12)
+    print(f'AD={autodiff:.6g}, FD={finite_difference:.6g}, relative error={error:.3g}', flush=True)
+    return error
+
+
+def density_checks(frames, name='Trajectory'):
+    """Report positive Euler density and conservation without modifying the state."""
+    frames = np.asarray(frames)
+    minimum = float(frames.min())
+    mass_drift = float(np.max(np.abs(frames.mean(axis=(-2, -1))-frames[0].mean())))
+    if not np.isfinite(frames).all() or minimum <= 0:
+        raise FloatingPointError(f'{name} contains nonfinite or nonpositive density.')
+    print(f'{name}: minimum density={minimum:.6g}, mass drift={mass_drift:.3g}', flush=True)
+    return dict(min_density=minimum, mass_drift=mass_drift)
+
+
 def save_results(target, initial, frames, history, output, parameters=None, times=None,
                  baseline=None, extent=None, labels=('x', 'y'), title='Image optimization',
                  electric_fields=None, baseline_electric_fields=None, time_scale=1.0,
                  time_label='t', field_label='Ex', density_background=None, image_contrast=1.0,
                  stage_lengths=None, stage_times=None, plot_threshold=None,
                  extended_frames=None, extended_times=None, extended_electric_fields=None,
-                 extended_baseline=None, metadata=None):
+                 extended_baseline=None, metadata=None, movie_seconds=6.0):
     """Save full physical arrays, separate diagnostics, and paired six-second movies."""
     from matplotlib.animation import FFMpegWriter
     from matplotlib.colors import SymLogNorm
@@ -109,6 +188,8 @@ def save_results(target, initial, frames, history, output, parameters=None, time
     import subprocess
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
+    if not np.isfinite(movie_seconds) or movie_seconds <= 0:
+        raise ValueError('Movie duration must be positive and finite.')
     target, initial, frames = map(np.asarray, (target, initial, frames))
     baseline = frames if baseline is None else np.asarray(baseline)
     times = np.arange(len(frames)) if times is None else np.asarray(times)
@@ -135,7 +216,7 @@ def save_results(target, initial, frames, history, output, parameters=None, time
                 baseline_mse=np.mean((baseline-target)**2, axis=(-2, -1)),
                 frame_mass=frames.mean(axis=(-2, -1)), times=times,
                 time_scale=float(time_scale), image_contrast=float(image_contrast),
-                plot_threshold=plot_threshold, extent=np.asarray(extent),
+                plot_threshold=plot_threshold, movie_seconds=float(movie_seconds), extent=np.asarray(extent),
                 labels=np.asarray(labels), title=np.asarray(title),
                 time_label=np.asarray(time_label), field_label=np.asarray(field_label),
                 signal_mse=losses/float(image_contrast)**2,
@@ -313,9 +394,9 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             heading = fig.suptitle(title, fontweight='bold', fontsize=20)
             indices = np.unique(np.linspace(0, len(run)-1, min(241, len(run))).astype(int))
             sequence = np.r_[np.zeros(10, dtype=int), indices, np.full(20, len(run)-1, dtype=int)]
-            writer = FFMpegWriter(fps=len(sequence)/6.0, codec='libx264', bitrate=-1,
+            writer = FFMpegWriter(fps=len(sequence)/float(movie_seconds), codec='libx264', bitrate=-1,
                 extra_args=['-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-threads', '2'])
-            print(f'Rendering {name}: {len(sequence)} dynamics-only frames, six seconds ...', flush=True)
+            print(f'Rendering {name}: {len(sequence)} dynamics-only frames, {movie_seconds:g} seconds ...', flush=True)
             fig.set_dpi(150)
             image.set_animated(True)
             heading.set_animated(True)
@@ -818,3 +899,208 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
     )
     return (initial, run_simulation, initial_fourier, velocities, image_from_parameters,
             image_at_velocity, background_at_velocity)
+
+
+def optimize_vlasov_stages(build_model, objective, checkpoint, horizons, iterations, rate,
+                           method='l-bfgs-b'):
+    """Run editable per-driver Vlasov losses through checked horizon stages."""
+    for index, (horizon, count) in enumerate(zip(horizons, iterations)):
+        if index < checkpoint.next_stage:
+            continue
+        model = build_model(horizon)
+        loss = objective(model, horizon)
+        print(f'Optimizing through t={horizon:g} with {count} {method} iterations...', flush=True)
+        parameters, history = optimize(loss, checkpoint.parameters, count, rate, method=method)
+        print(f't={horizon:g}: objective={float(loss(parameters)):.6g}', flush=True)
+        checkpoint.save(parameters, history)
+    return checkpoint.parameters, checkpoint.history, checkpoint.lengths
+
+
+def save_vlasov_fit(target, parameters, initial, model, build_model, loss, output, *,
+                    domain_length, velocity_range, wide_velocity_range, contrast, dt,
+                    frames_count, extended_final_time, extended_frames_count, horizons,
+                    histories, stage_lengths, title, movie_seconds=6.0, checks=True):
+    """Replay a Vlasov fit, validate it, and save matched standard/extended movies."""
+    _, run, fourier, velocities, image, _, background = model
+    print('Replaying optimized Vlasov dynamics and baseline...', flush=True)
+    times, frames, fields = run(parameters, save_count=frames_count)
+    _, baseline, baseline_fields = run(initial, save_count=frames_count)
+    print(f'Extending the same initial condition through t={extended_final_time:g}...', flush=True)
+    long_run = build_model(extended_final_time)[1]
+    long_times, long_frames, long_fields = long_run(parameters, save_count=extended_frames_count)
+    if not np.allclose(np.asarray(long_times[:len(times)]), np.asarray(times), rtol=0, atol=1e-10):
+        raise RuntimeError('Standard and extended Vlasov trajectories use different time grids.')
+    prefix_error = float(jnp.max(jnp.abs(long_frames[:len(frames)]-frames)))
+    if prefix_error > 1e-6:
+        raise RuntimeError(f'Extended trajectory prefix differs by {prefix_error:.3g}.')
+    diagnostics = dict(coefficient_density_scale=float(fourier.density_scale),
+        diagnostic_initial_signal_mse=float(jnp.mean((image(parameters)-target)**2)),
+        diagnostic_extended_prefix_max_error=prefix_error,
+        diagnostic_electric_field_rms=float(jnp.sqrt(jnp.mean(fields**2))),
+        diagnostic_mass_relative_range=float(jnp.ptp(frames.mean(axis=(-2, -1))) /
+            jnp.maximum(jnp.abs(frames[0].mean()), 1e-30)))
+    if checks:
+        print('Checking broad-velocity tails, time-step refinement, and autodiff...', flush=True)
+        wide_v = jnp.linspace(-wide_velocity_range, wide_velocity_range, 257)
+        wide = run(parameters, save_count=65, velocity_samples=wide_v)[3]
+        half = run(parameters, save_count=2, time_step=dt/2)[1]
+        signal_scale = jnp.sqrt(jnp.mean(((frames[-1]-background(velocities)[:, None])/contrast)**2))
+        step_error = jnp.sqrt(jnp.mean(((half[-1]-frames[-1])/contrast)**2))/jnp.maximum(signal_scale, 1e-12)
+        diagnostics.update(diagnostic_viewport_minimum=float(frames.min()),
+            diagnostic_viewport_negative_fraction=float(jnp.mean(frames < 0)),
+            diagnostic_wide_velocity_minimum=float(wide.min()),
+            diagnostic_wide_velocity_negative_fraction=float(jnp.mean(wide < 0)),
+            diagnostic_wide_integrated_negative_fraction=float(jnp.sum(jnp.maximum(-wide, 0)) /
+                jnp.maximum(jnp.sum(jnp.maximum(wide, 0)), 1e-30)),
+            diagnostic_dt_half_relative_signal_rms=float(step_error),
+            diagnostic_ad_fd_relative_error=gradient_check(loss, parameters))
+        print(f'Integrated negative mass={diagnostics["diagnostic_wide_integrated_negative_fraction"]:.3%}; '
+              f'dt/2 signal RMS={float(step_error):.3%}.', flush=True)
+    physical_target = background(velocities)[:, None] + contrast*target
+    save_results(physical_target, frames[0], frames, histories, output,
+        parameters=fourier(parameters), times=times, baseline=baseline,
+        extent=(0, domain_length, -velocity_range, velocity_range), labels=('x', 'vx'), title=title,
+        electric_fields=fields, baseline_electric_fields=baseline_fields,
+        time_label='ωₚₑ t', time_scale=1.0, field_label='Ex',
+        density_background=background(velocities)[:, None], image_contrast=contrast,
+        stage_lengths=stage_lengths, stage_times=horizons, metadata=diagnostics,
+        extended_frames=long_frames, extended_times=long_times,
+        extended_electric_fields=long_fields, movie_seconds=movie_seconds)
+
+
+def save_pic_artifacts(target, initial_parameters, optimized_parameters, history, output,
+                       run_simulation, extended_simulation, image_from_phase_space,
+                       parameter_image, initial_electric_field, settings, stage_lengths,
+                       loss):
+    """Replay, validate, and save paired PIC rollouts from one optimized IC."""
+    print('Replaying optimized PIC dynamics, baseline, and extension...', flush=True)
+    particles, steps = int(settings['particles']), int(settings['steps'])
+    stride = int(settings['save_stride'])
+    baseline_output = run_simulation(initial_parameters)
+    optimized_output = run_simulation(optimized_parameters)
+    extended_steps = int(round(steps * float(settings['extension_factor'])))
+    extended_output = extended_simulation(optimized_parameters) if extended_simulation else None
+    optimized_image = parameter_image(optimized_parameters)
+    def sample(trajectory, parameters, indices):
+        selected = indices[1:]-1  # Public upstream output begins at solver step 1.
+        images = jax.lax.map(lambda state: image_from_phase_space(*state),
+            (trajectory['positions'][selected, :particles, 0],
+             trajectory['velocities'][selected, :particles, 0]), batch_size=32)
+        return (jnp.concatenate((parameter_image(parameters)[None], images)),
+                jnp.r_[0., trajectory['time_array'][selected]],
+                jnp.concatenate((initial_electric_field(parameters)[None],
+                    trajectory['electric_field'][selected, :, 0])))
+
+    baseline_indices = np.unique(np.r_[np.arange(0, steps+1, stride), steps])
+    solver_indices = baseline_indices[1:]-1
+    baseline_frames, _, baseline_fields = sample(baseline_output, initial_parameters, baseline_indices)
+    frames, times, fields = sample(optimized_output, optimized_parameters, baseline_indices)
+
+    extended_frames = extended_times = extended_fields = None
+    prefix_position_error = prefix_velocity_error = prefix_field_error = 0.0
+    if extended_output is not None:
+        extended_indices = np.unique(np.r_[baseline_indices,
+            np.arange(0, extended_steps + 1, stride), extended_steps])
+        extended_frames, extended_times, extended_fields = sample(
+            extended_output, optimized_parameters, extended_indices)
+        prefix_position_error = float(jnp.max(jnp.abs(
+            extended_output['positions'][solver_indices] - optimized_output['positions'][solver_indices])))
+        prefix_velocity_error = float(jnp.max(jnp.abs(
+            extended_output['velocities'][solver_indices] - optimized_output['velocities'][solver_indices])))
+        prefix_field_error = float(jnp.max(jnp.abs(
+            extended_output['electric_field'][solver_indices] - optimized_output['electric_field'][solver_indices])))
+        if max(prefix_position_error, prefix_velocity_error, prefix_field_error) > 1e-10:
+            raise ValueError('Paired extended PIC run does not reproduce its standard-horizon prefix.')
+
+    c = 299792458.0
+    velocity = optimized_output['velocities'][:, :particles]
+    max_speed = float(jnp.max(jnp.linalg.norm(velocity, axis=-1)) / c)
+    if not np.isfinite(max_speed) or max_speed >= 1.0:
+        raise FloatingPointError(f'PIC produced nonphysical |v|/c={max_speed:.6g}.')
+    occupancy = float(jnp.mean(jnp.abs(velocity[..., 0] / c) <= float(settings['velocity_range'])))
+    field_rms = float(jnp.sqrt(jnp.mean(optimized_output['electric_field']**2)))
+    mass = float(jnp.mean(frames))
+    print(f'PIC loss {float(loss(initial_parameters)):.6g} -> {float(loss(optimized_parameters)):.6g}; '
+          f'duration={float(times[-1]*optimized_output["plasma_frequency"]):.3f} ωₚₑ⁻¹; '
+          f'Ex RMS={field_rms:.5g}; viewport occupancy={occupancy:.4f}; '
+          f'max |v|/c={max_speed:.5f}; image mean={mass:.6g}.', flush=True)
+    gradient = jax.grad(loss)(optimized_parameters) if settings['fd_epsilons'] else jnp.zeros_like(optimized_parameters)
+    direction = jnp.sin(jnp.arange(optimized_parameters.size).reshape(optimized_parameters.shape)*.37 + .2)
+    direction /= jnp.linalg.norm(direction)
+    autodiff = float(jnp.vdot(gradient, direction).real)
+    fd_errors = []
+    for epsilon in settings['fd_epsilons']:
+        finite_difference = float((loss(optimized_parameters + epsilon*direction)
+                                   - loss(optimized_parameters - epsilon*direction))/(2*epsilon))
+        error = abs(autodiff-finite_difference)/max(abs(autodiff), abs(finite_difference), 1e-12)
+        fd_errors.append(error)
+        print(f'PIC gradient check ε={epsilon:g}: AD={autodiff:.6g}, FD={finite_difference:.6g}, '
+              f'relative error={error:.3g}.', flush=True)
+    if extended_output is not None:
+        print(f'Paired prefix max errors: position={prefix_position_error:.3g} m, '
+              f'velocity={prefix_velocity_error:.3g} m/s, field={prefix_field_error:.3g} V/m; '
+              f'extension={float(extended_times[-1]/times[-1]):.6g}x.', flush=True)
+    resolved_stage_times = [float(optimized_output['plasma_frequency'] * optimized_output['dt'] * h)
+                            for h in settings['horizons']]
+    saved_parameters = [optimized_output['initial_positions'], optimized_output['initial_velocities'],
+        jnp.asarray(settings['max_speed']), jnp.asarray(settings['field_grid']),
+        jnp.asarray(settings['kernel_width']), jnp.asarray(settings['timestep_ratio']),
+        jnp.asarray(settings['debye_ratio']), jnp.asarray(settings['thermal_speed']),
+        jnp.asarray(settings['length']), jnp.asarray(settings['velocity_range'])]
+    if 'sampled_steps' in settings:
+        saved_parameters.append(jnp.asarray(settings['sampled_steps']))
+    save_results(
+        target, optimized_image, frames, history, output,
+        parameters=tuple(saved_parameters),
+        times=times, baseline=baseline_frames,
+        time_scale=optimized_output['plasma_frequency'],
+        extent=(-settings['length']/2, settings['length']/2,
+                -settings['velocity_range'], settings['velocity_range']),
+        labels=('x [m]', 'vx / c'), title=settings['title'],
+        electric_fields=fields, baseline_electric_fields=baseline_fields,
+        time_label='ωₚₑ t', field_label='Ex [V/m]',
+        stage_lengths=stage_lengths, stage_times=resolved_stage_times,
+        extended_frames=extended_frames, extended_times=extended_times,
+        extended_electric_fields=extended_fields, movie_seconds=settings['movie_seconds'],
+        metadata={f'input_{key}': np.asarray(value) for key, value in settings.items()
+                  if isinstance(value, (int, float, np.integer, np.floating))} | {
+            'simulation_steps': np.asarray(steps), 'save_stride': np.asarray(stride),
+            'diagnostic_velocity_viewport_occupancy': np.asarray(occupancy),
+            'diagnostic_max_speed_over_c': np.asarray(max_speed),
+            'diagnostic_electric_field_rms': np.asarray(field_rms),
+            'diagnostic_paired_prefix_position_error': np.asarray(prefix_position_error),
+            'diagnostic_paired_prefix_velocity_error': np.asarray(prefix_velocity_error),
+            'diagnostic_paired_prefix_field_error': np.asarray(prefix_field_error),
+            'diagnostic_ad_fd_relative_errors': np.asarray(fd_errors),
+        },
+    )
+
+
+def save_euler_fit(target, state, baseline_state, evolve, history, output, *, steps, dt,
+                   horizons, stage_lengths, title, extent, image_contrast=1.0,
+                   density_background=None, extension_factor=1.5, movie_seconds=6.0,
+                   checks=True, metadata=None):
+    """Replay an Euler fit, check conservation/refinement, and save paired movies."""
+    print('Replaying optimized Euler dynamics, baseline, and extension...', flush=True)
+    frames, baseline = evolve(state, steps, dt), evolve(baseline_state, steps, dt)
+    extended_steps = round(extension_factor*steps)
+    extended = evolve(state, extended_steps, dt)
+    extended_baseline = evolve(baseline_state, extended_steps, dt)
+    diagnostics = dict(metadata or {})
+    for name, trajectory in [('standard', frames), ('extended', extended)]:
+        diagnostics.update({f'{name}_{key}': value for key, value in density_checks(trajectory, name).items()})
+    if not np.allclose(extended[:len(frames)], frames, rtol=1e-10, atol=1e-12):
+        raise ValueError('Extended Euler trajectory differs before the optimization horizon.')
+    if checks:
+        print('Checking Euler time-step refinement...', flush=True)
+        fine = evolve(state, 2*steps, dt/2)
+        diagnostics.update({f'fine_replay_{key}': value for key, value in density_checks(fine, 'Half-step').items()})
+        difference = np.asarray(fine[-1]-frames[-1])
+        diagnostics.update(fine_replay_endpoint_rms=float(np.sqrt(np.mean(difference**2))),
+                           fine_replay_endpoint_max=float(np.max(np.abs(difference))))
+    save_results(target, frames[0], frames, history, output, parameters=state,
+                 times=np.arange(steps+1)*dt, baseline=baseline, extent=extent, title=title,
+                 image_contrast=image_contrast, density_background=density_background,
+                 stage_lengths=stage_lengths, stage_times=horizons, metadata=diagnostics,
+                 extended_frames=extended, extended_times=np.arange(extended_steps+1)*dt,
+                 extended_baseline=extended_baseline, movie_seconds=movie_seconds)

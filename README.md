@@ -1,64 +1,63 @@
 # Optimize an image through plasma dynamics
 
-**Differentiate through a simulation, then change its initial condition to draw your image.** Six short, editable examples use JAX autodiff: compressible isothermal Euler in two spatial dimensions, SPECTRAX Vlasov in 1D1V, and JAX-in-Cell particle-in-cell phase space.
+Use **JAX autodiff** to find an initial fluid or plasma state that draws your image.
 
-| Model | Match a final snapshot | Retain the shape over time |
+| Model | Match at time T | Retain over time |
 |---|---|---|
 | 2D isothermal Euler | [snapshot/euler.py](snapshot/euler.py) | [retention/euler.py](retention/euler.py) |
-| 1D1V Vlasov–Maxwell | [snapshot/vlasov.py](snapshot/vlasov.py) | [retention/vlasov.py](retention/vlasov.py) |
-| Electrostatic PIC | [snapshot/pic.py](snapshot/pic.py) | [retention/pic.py](retention/pic.py) |
+| SPECTRAX · 1D1V | [snapshot/vlasov.py](snapshot/vlasov.py) | [retention/vlasov.py](retention/vlasov.py) |
+| JAX-in-Cell · PIC | [snapshot/pic.py](snapshot/pic.py) | [retention/pic.py](retention/pic.py) |
 
-## Watch the optimized dynamics
+## Movies and figures
 
-Both Euler previews use 128 × 128 cells. The Vlasov snapshot below uses 160 spatial points and 32 Hermite modes, reconstructed on 320 velocity samples. The resolution scan is complete. Optimization of the 96-point, 64-Hermite Vlasov candidate and finer PIC cases is paused; their unfinished results have not replaced completed previews.
+**Six seconds each.** GIF previews loop inline; download the 1080p H.264 MP4s for PowerPoint. Each pair uses one optimized initial condition, through T and 1.5T. Movies contain density or phase space only; fields and losses are separate figures.
 
-These six-second GIF previews loop automatically in GitHub's README. The corresponding **six-second, 1080p H.264 MP4s** are suitable for inserting into PowerPoint. Movies show only the evolving Euler density or plasma phase-space distribution. Electric fields are saved as separate figures. Each movie uses actual saved solver states, a fixed color scale, and a simulation clock; the Euler snapshot displays density minus its unit background on a labeled symmetric-log scale; objective histories stay in separate figures.
+### Euler · snapshot · 128 × 128 cells
 
-### Euler · final snapshot
+| Through T | Through 1.5T |
+|---|---|
+| ![Euler snapshot dynamics](media/snapshot_euler.gif) | ![Euler snapshot extended dynamics](media/snapshot_euler_extended.gif) |
+| [MP4](media/snapshot_euler.mp4) | [MP4](media/snapshot_euler_extended.mp4) |
 
-![Optimized Euler density evolving toward the target](media/snapshot_euler.gif)
+| Initial → final density | Optimization loss |
+|---|---|
+| ![Euler snapshot initial and final density](media/snapshot_euler_initial_final.png) | ![Euler snapshot loss](media/snapshot_euler_loss.png) |
 
-![Euler initial and final density](media/snapshot_euler_initial_final.png)
+[Initial velocity](media/snapshot_euler_initial_velocity.png) · [Target and baseline](media/snapshot_euler_comparison.png) · [Final at 1.5T](media/snapshot_euler_extended_initial_final.png)
 
-Same initial condition, evolved to 1.5T:
+### Euler · retention · 128 × 128 cells
 
-![Euler dynamics through 1.5T](media/snapshot_euler_extended.gif)
+| Through T | Through 1.5T |
+|---|---|
+| ![Euler retention dynamics](media/retention_euler.gif) | ![Euler retention extended dynamics](media/retention_euler_extended.gif) |
+| [MP4](media/retention_euler.mp4) | [MP4](media/retention_euler_extended.mp4) |
 
-[Extended PowerPoint movie](media/snapshot_euler_extended.mp4) · [Initial and extended final state](media/snapshot_euler_extended_initial_final.png)
+| Initial → final density | Optimization loss |
+|---|---|
+| ![Euler retention initial and final density](media/retention_euler_initial_final.png) | ![Euler retention loss](media/retention_euler_loss.png) |
 
-[PowerPoint movie](media/snapshot_euler.mp4) · [Optimized initial velocity](media/snapshot_euler_initial_velocity.png) · [Target and baseline comparison](media/snapshot_euler_comparison.png) · [Loss history](media/snapshot_euler_loss.png)
+[Initial velocity](media/retention_euler_initial_velocity.png) · [Target and baseline](media/retention_euler_comparison.png) · [Final at 1.5T](media/retention_euler_extended_initial_final.png)
 
-### Euler · shape retention
+### Vlasov · snapshot · 160 spatial points, 32 Hermite modes
 
-![Euler density optimized to retain the image](media/retention_euler.gif)
+| Through T | Through 1.5T |
+|---|---|
+| ![Vlasov snapshot phase-space dynamics](media/snapshot_vlasov.gif) | ![Vlasov snapshot extended phase-space dynamics](media/snapshot_vlasov_extended.gif) |
+| [MP4](media/snapshot_vlasov.mp4) | [MP4](media/snapshot_vlasov_extended.mp4) |
 
-![Euler retention initial and final density](media/retention_euler_initial_final.png)
+| Initial → final phase space | Optimization loss |
+|---|---|
+| ![Vlasov snapshot initial and final phase space](media/snapshot_vlasov_initial_final.png) | ![Vlasov snapshot loss](media/snapshot_vlasov_loss.png) |
 
-Same initial condition, evolved to 1.5T:
+[Electric field](media/snapshot_vlasov_electric_field.png) · [Density](media/snapshot_vlasov_density.png) · [Mean velocity](media/snapshot_vlasov_velocity.png) · [Target and baseline](media/snapshot_vlasov_comparison.png) · [Final at 1.5T](media/snapshot_vlasov_extended_initial_final.png)
 
-![Euler retention dynamics through 1.5T](media/retention_euler_extended.gif)
+The 64-Hermite Vlasov candidate and finer PIC/retention fits are **paused**. Their scripts are included; unfinished fits do not replace these completed previews.
 
-[Extended PowerPoint movie](media/retention_euler_extended.mp4) · [Initial and extended final state](media/retention_euler_extended_initial_final.png)
+GIF autoplay follows the reader's [GitHub motion preference](https://github.blog/changelog/2022-05-19-option-to-prevent-animated-images-from-playing-automatically/).
 
-[PowerPoint movie](media/retention_euler.mp4) · [Target and baseline comparison](media/retention_euler_comparison.png) · [Loss history](media/retention_euler_loss.png)
+## Run
 
-### Vlasov · final snapshot
-
-![Optimized Vlasov phase space](media/snapshot_vlasov.gif)
-
-![Vlasov initial and final phase space](media/snapshot_vlasov_initial_final.png)
-
-Same initial condition, evolved to 1.5T:
-
-![Vlasov dynamics through 1.5T](media/snapshot_vlasov_extended.gif)
-
-[Extended PowerPoint movie](media/snapshot_vlasov_extended.mp4) · [Initial and extended final state](media/snapshot_vlasov_extended_initial_final.png)
-
-[PowerPoint movie](media/snapshot_vlasov.mp4) · [Electric field](media/snapshot_vlasov_electric_field.png) · [Density](media/snapshot_vlasov_density.png) · [Mean velocity](media/snapshot_vlasov_velocity.png) · [Target and baseline comparison](media/snapshot_vlasov_comparison.png) · [Loss history](media/snapshot_vlasov_loss.png)
-
-## Run with your own image
-
-Use Python 3.11 or newer:
+Python 3.11 or newer:
 
 ```sh
 git clone https://github.com/rogeriojorge/optimize-figure-plasma.git
@@ -67,76 +66,107 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python snapshot/euler.py
-# Or any of the other five scripts in the table above.
 ```
 
-Edit `IMAGE` and the input parameters at the top of the chosen script. JPG and PNG are supported, including PNG transparency. There are no parsed arguments or main functions: imports, inputs, simulation/optimization, and saved results are visible in order. Every optimizer iteration reports its objective and elapsed time. First-call JAX compilation takes longer than a warm iteration. A bundled FFmpeg binary creates the movies; no separate FFmpeg installation is required. CPU defaults are modest; install an appropriate JAX accelerator wheel to use a GPU.
+- Edit `IMAGE`: any JPG or PNG. The bundled W7-X photograph is the default.
+- Edit the grid, horizons, iterations, optimizer, and loss directly in a driver.
+- No argument parser or main function. Every iteration prints loss and timing.
+- Set `RESUME=True` to load a matching completed-stage checkpoint. Movie settings can change independently.
+- Skip extra validation replays with `CHECKS=False` (Euler/Vlasov) or `FD_EPSILONS=()` (PIC).
+- First evaluation includes compilation. FFmpeg is bundled; plots use a headless backend.
 
-Image preprocessing preserves aspect ratio, pads the canvas, inverts grayscale, and normalizes the mean. Dark artwork becomes high density. The Euler snapshot places an editable image contrast on a unit-density background; its initial density is held exactly uniform and only the initial velocity is optimized. Euler retention and PIC add a small density floor; Vlasov adds the image as a small perturbation of a positive Maxwellian background and displays `f − background` with an explicitly labeled scale. All density and phase-space images use jet with fixed color limits. Vlasov perturbations use a symmetric-log scale; PIC uses a linear scale. Plasma movies have no opacity cutoff. Euler retains its display-only cutoff near 5% of the target peak; it never alters dynamics, objectives, or saved physical arrays. Colors are display choices rather than three independently simulated channels. The supplied W7-X picture is artwork to reproduce, rather than a W7-X equilibrium.
+## Models
 
-## Resolution and duration
+### Euler · density in (x, y)
 
-The numerical grids are independent of the input image's pixel dimensions. Change the input grid parameters to resample any JPG or PNG while preserving its proportions; increasing movie resolution alone does not increase solver accuracy.
+$$
+\partial_t\rho+\nabla\cdot(\rho\mathbf u)=0,\qquad
+\partial_t(\rho\mathbf u)+\nabla\cdot(\rho\mathbf u\otimes\mathbf u+c_s^2\rho\mathbf I)=0.
+$$
 
-| Model | Numerical resolution | Integration horizon |
+Periodic, compressible, isothermal flow. Snapshot: MUSCL–Hancock/Rusanov, uniform initial density, optimized velocity. Retention: Rusanov/SSP-RK2, optimized density and velocity.
+
+### Vlasov · distribution in (x, v)
+
+$$
+\partial_t f_s+v\partial_x f_s+\frac{q_s}{m_s}E_x\partial_v f_s=C_s[f_s],\qquad
+\partial_x E_x=\frac{1}{\epsilon_0}\sum_s q_s\int f_s\,dv.
+$$
+
+SPECTRAX Hermite–Fourier expansion; electrons and heavy ions with self-consistent fields. An analytic Maxwellian carries a small image perturbation. High-Hermite relaxation is controlled by `COLLISION_RATE`.
+
+### PIC · particles and a field grid
+
+$$
+\dot x_p=\frac{p_{x,p}}{\gamma_p m_p},\qquad
+\dot{\mathbf p}_p=q_p\mathbf E(x_p),\qquad
+\gamma_p=\sqrt{1+\frac{|\mathbf p_p|^2}{m_p^2c^2}}.
+$$
+
+JAX-in-Cell electrostatic field solve and relativistic Boris pusher. The solver uses three velocity components; the image uses (x, vx). Gaussian deposition makes the image loss differentiable. Choose image sampling or `INITIALIZATION='two_stream'`.
+
+## Optimization
+
+Let θ parameterize the initial condition and gθ(t) denote the simulated density or phase-space image; I is the target.
+
+$$
+L_{\rm snapshot}=\langle(g_\theta(T)-I)^2\rangle,\qquad
+L_{\rm retention}=w_0\langle(g_\theta(0)-I)^2\rangle+
+\frac{w_t}{M}\sum_{j=1}^{M}\langle(g_\theta(t_j)-I)^2\rangle.
+$$
+
+- Short → long horizons; each stage starts from the previous optimized initial condition.
+- JAX differentiates through time integration. Checkpointing reduces reverse-mode memory.
+- `OPTIMIZER`: `'adam'`, `'lbfgs'` (Optax), `'l-bfgs-b'`, or `'bfgs'` (SciPy + JAX gradients).
+- Loss weights stay in the drivers: initial fidelity, Vlasov negativity, and PIC retention velocity-window penalties.
+- Vlasov compares the background-subtracted perturbation divided by `IMAGE_CONTRAST`.
+
+## Resolution and measured cost
+
+Image dimensions do not set solver resolution. Hermite modes resolve velocity structure; displayed velocity bins sample that expansion. PIC particles, field cells, and image bins are independent.
+
+| Driver | Solver / reconstruction | Final horizon |
 |---|---|---|
-| Euler snapshot | 128 × 128 cells, 352 final-horizon steps | 0.43 sound-crossing times of the unit box |
-| Euler retention | 128 × 128 cells, 192 final-horizon steps | `t = 0.5`, with sound speed 0.45 |
-| Vlasov snapshot / retention | 96 / 160 spatial Fourier points, 64 / 32 Hermite modes, 320 displayed velocity bins | `ωₚₑ t = 60`, domain length 250 |
-| PIC | 64 field cells, 4,096 electrons and 4,096 ions, 256 × 256 phase-space bins | 2,000 snapshot / 2,400 retention steps |
+| Euler snapshot | 128² cells, 352 steps | T = 0.43, cs = 1 |
+| Euler retention | 128² cells, 192 steps | T = 0.5, cs = 0.45 |
+| Vlasov snapshot | 96 spatial points, 64 Hermite modes, 320 velocity samples | ωₚₑT = 60 |
+| Vlasov retention | 160 spatial points, 32 Hermite modes, 320 velocity samples | ωₚₑT = 60 |
+| PIC | 4,096 particles/species, 64 field cells, 256² image bins | 2,000 / 2,400 steps |
 
-Vlasov velocity bins sample a Hermite expansion: increasing `MODES` raises velocity-space solver resolution, while `VELOCITY_BINS` raises reconstruction resolution. PIC phase-space bins are separate from the field grid and particle count. Its Gaussian deposition spans three phase-space bins to reduce sampling noise; resolving smaller kinetic features requires more particles too. Euler's published grids contain about seven times as many cells as the initial 48 × 48 trials.
+| Vlasov scan at ωₚₑT = 20 | Initial image MSE | Warm JAX value/gradient |
+|---|---|---|
+| 160 spatial / 32 Hermite | 1.012 | 2.99 s |
+| 96 spatial / 48 Hermite | 0.785 | 2.56 s |
+| 96 spatial / 64 Hermite | 0.725 | 3.74 s |
+| 128 spatial / 48 Hermite | 0.849 | 3.56 s |
+| 128 spatial / 64 Hermite | 0.787 | 4.65 s |
 
-Each example optimizes short horizons first, then uses the optimized initial condition as the starting guess for a longer-horizon optimization. The simulation still starts at time zero at each stage. This continuation helps avoid tackling the longest, most sensitive trajectory immediately. Euler increases its integration step count with each horizon; Vlasov keeps a fixed time step; PIC increases the number of time steps. Loss plots separate the stages because each horizon defines a different objective.
+- 64-Hermite candidate: ~9.5–9.8 s per warmed gradient at ωₚₑT = 60.
+- PIC particle scan: initial image MSE 0.935 → 0.660 → 0.504 for 1,024 → 2,048 → 4,096 particles/species.
+- PIC checkpointed Boris path: 8.83 s at 4,096 particles and 2,000 steps; ordinary full-history AD exceeded 20 s.
+- Quiet two-stream test: growing electric fields and nonlinear roll-up, poorer image fit than image sampling.
+- Timings vary with hardware and load. Refinement changes phase-space evolution; these scans do not establish convergence.
 
-## Resolution scan
+## Saved results
 
-The scan changes solver resolution independently of the displayed image. At the same Vlasov horizon `ωₚₑ t = 20`, the initial projection improves as more Hermite moments represent velocity structure:
+Each driver writes `results/<mode>_<model>/`. Shared saving and checks live in [helpers.py](helpers.py).
 
-| Spatial points | Hermite modes | Initial image MSE | Warm JAX value/gradient |
-|---|---|---|---|
-| 160 | 32 | 1.012 | 2.99 s |
-| 96 | 48 | 0.785 | 2.56 s |
-| 96 | 64 | 0.725 | 3.74 s |
-| 128 | 48 | 0.849 | 3.56 s |
-| 128 | 64 | 0.787 | 4.65 s |
+| Files | Contents |
+|---|---|
+| `trajectory.{mp4,gif}`, `trajectory_extended.{mp4,gif}` | Dynamics through T / 1.5T; six seconds each |
+| `initial_final.png`, `extended_initial_final.png` | Optimized initial and final states |
+| `comparison.png`, `loss.png` | Target/baseline comparison; loss by horizon stage |
+| `electric_field.png`, `density.png`, `velocity.png` | Separate plasma diagnostics |
+| `initial_velocity.png` | Euler initial speed and velocity arrows |
+| `results.npz`, `checkpoint.npz` | Physical arrays, optimized state, diagnostics; resumable stage history |
 
-The 96-point, 64-mode candidate has reached its final optimization stage through `ωₚₑ t = 60`; warmed gradients are approximately ten seconds. Refining a fixed initial condition changes the evolved phase-space structure appreciably, so these choices balance representation and cost rather than establish spectral convergence.
+Jet colors and fixed limits across each movie pair. Euler uses a soft display cutoff; plasma has none. Vlasov displays f − background on a symmetric-log scale. Color choices do not alter the saved arrays or equations.
 
-PIC scans used 1,024, 2,048, and 4,096 particles per species with 32, 64, and 128 field cells, keeping the physical time step and plasma frequency fixed. Increasing particles reduced initial image MSE from 0.935 to 0.660 to 0.504. Increasing field cells gave less benefit for this image; 64 cells is the working choice. At the full 2,000-step horizon, checkpointing the upstream Boris step reduced the 4,096-particle gradient from over twenty seconds to 8.83 seconds and substantially reduced memory use. The equations and time steps remain those of JAX-in-Cell.
+Checks cover autodiff/finite differences, time-step refinement, positive Euler density, conservation, plasma fields, and the shared T/1.5T trajectory prefix. Spectral negative-tail mass and PIC velocity-window occupancy are reported separately.
 
-A quiet two-stream initialization was also tested and produced growing electric fields and nonlinear roll-up. It fitted this image less well than sampling particles from the image, so `INITIALIZATION="image"` remains the default; edit it to `"two_stream"` to explore the instability. Timings exclude compilation and vary with hardware and concurrent work.
+## Sources and license
 
-## Objective and autodiff
-
-For a snapshot, minimize `mean((f(T) - target)**2)`. For retention, penalize disagreement at the initial time and multiple times over a fixed horizon. Retention cannot win by shortening the simulation. Only initial conditions change; all subsequent states follow the solver. Initial fidelity, negative spectral values, and particles leaving the velocity viewport receive additional penalties where appropriate.
-
-Every simulation and objective gradient uses JAX. The shared optimizer defaults to Optax Adam; `method="lbfgs"` selects Optax L-BFGS, and `method="l-bfgs-b"` or `method="bfgs"` selects SciPy with a JIT-compiled **JAX value and gradient**. The SciPy alternatives still differentiate through the simulation, rather than estimate derivatives with finite differences. Choose an optimizer by changing one editable call in a script.
-
-Euler advances conservative `(rho, rho*u, rho*v)` with periodic Rusanov fluxes and isothermal pressure. The snapshot uses a second-order MUSCL–Hancock predictor to create the image from uniform density; retention uses SSP-RK2 with first-order face states. Checkpointed JAX scans carry the gradient through time. Density is positive and initial velocities are bounded. SPECTRAX evolves electron and heavy-ion Hermite–Fourier coefficients with self-consistent fields; the rendered distribution is the transverse-velocity marginal. Its collisional Hermite relaxation damps unresolved high moments. Initially neutral electron/ion density profiles and a positive Maxwellian background permit longer runs with a small image perturbation; the simulation evolves the full distribution and electric field. PIC calls JAX-in-Cell's electrostatic field solver and relativistic Boris pusher with electrons and ions. Its image is a differentiable kernel deposition in `(x, vx)`; initial velocities use a smooth subluminal parameterization. The upstream PIC pusher has three velocity components, while the displayed and optimized image uses one position and one velocity.
-
-A long self-consistent plasma trajectory can mix an arbitrary image beyond recognition. The initial/final figures and baseline comparisons show that tradeoff, including imperfect fits. Spectral reconstruction can leave small negative Gibbs residues; increasing resolution and checking the velocity tails is preferable to silently clipping the distribution. Fixed movie color scales and fixed PIC deposition normalization avoid concealing evolving amplitudes or particles leaving the viewport.
-
-## Outputs and numerical checks
-
-Each script writes `results/<mode>_<model>/`:
-
-- `trajectory.mp4` and `trajectory.gif`: density or phase-space dynamics through the optimization time T.
-- `trajectory_extended.mp4` and `trajectory_extended.gif`: the same optimized initial condition evolved to 1.5T. Both versions last six seconds and share color limits; the extension receives no further optimization.
-- `extended_initial_final.png`: initial state and final state at 1.5T.
-- `initial_final.png`: the optimized initial and final density or phase-space states.
-- `electric_field.png`: separate initial/final field profiles and a field history for plasma cases.
-- `density.png` and `velocity.png`: separate velocity-window density and mean-velocity profiles for plasma cases.
-- `comparison.png`: target, optimized initial, baseline final, and optimized final.
-- `loss.png`: objective versus optimization iteration.
-- `results.npz`: target, optimized initial, saved trajectory, baseline, times, objective history, per-frame errors, represented mass, fields, background, image contrast, normalized signal errors, horizon-stage histories, display settings, and optimized initial-state arrays.
-
-`parameters_0` is Euler's conservative state or SPECTRAX's complex Hermite–Fourier coefficients. PIC stores full initial particle positions and velocities as `parameters_0` and `parameters_1` (electrons first, then ions). `time_scale` converts saved physical times to the displayed normalized clock. Movies subsample long trajectories without interpolating artificial density states.
-
-Completed validation runs check autodiff against directional finite differences, Euler conservation, plasma electric fields, and time-step refinement. Finer plasma retention and PIC fits and a higher-Hermite Vlasov candidate are paused; the gallery identifies the completed resolution. Upstream revisions and JAX dependencies are pinned in [requirements.txt](requirements.txt). Increase resolution, integration steps, and optimization iterations together when refining a result; the runtime target is a warm objective/gradient evaluation under ten seconds, rather than a hardware-independent guarantee.
-
-## Credits and license
-
-Solvers: [SPECTRAX](https://github.com/uwplasma/SPECTRAX) and [JAX-in-Cell](https://github.com/uwplasma/JAX-in-Cell), with examples written in the simple editable-input style of UWPlasma and [Simsopt](https://github.com/hiddenSymmetries/simsopt). Shared code is in [helpers.py](helpers.py); numerical Euler integration lives there too.
-
-`W7X-Spulen_Plasma_blau_gelb.jpg`: Max-Planck-Institut für Plasmaphysik, [Wikimedia Commons source](https://commons.wikimedia.org/wiki/File:W7X-Spulen_Plasma_blau_gelb.jpg), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). The included image is the 330 × 205 version; plots and movies are scalar-density and false-color transformations with this attribution. The code is GPL-3.0 licensed because the second-order Euler implementation is adapted from Philip Mocz’s [finitevolume-jax](https://github.com/pmocz/finitevolume-jax) (2024). The image retains its separate license.
+- Solvers: [SPECTRAX](https://github.com/uwplasma/SPECTRAX), [JAX-in-Cell](https://github.com/uwplasma/JAX-in-Cell). Revisions pinned in [requirements.txt](requirements.txt).
+- Editable-example style: UWPlasma and [Simsopt](https://github.com/hiddenSymmetries/simsopt).
+- Euler MUSCL implementation: Philip Mocz's [finitevolume-jax](https://github.com/pmocz/finitevolume-jax) (2024); code licensed [GPL-3.0](LICENSE).
+- W7-X image: Max-Planck-Institut für Plasmaphysik, [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:W7X-Spulen_Plasma_blau_gelb.jpg), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). The bundled 330 × 205 photograph retains this license; figures use scalar, false-color transformations.
