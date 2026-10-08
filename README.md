@@ -10,7 +10,7 @@
 
 ## Watch the optimized dynamics
 
-The gallery shows the 96 × 96 Euler validation checkpoint. The finer defaults below now use progressive horizons; updated galleries for all six examples are being generated.
+The Euler snapshot uses 128 × 128 cells; its retention preview remains the previous 96 × 96 validation. The Vlasov snapshot below uses 160 spatial points and 32 Hermite modes, reconstructed on 320 velocity samples. A scan of higher Hermite resolution and finer PIC sampling is in progress; the snapshot script now tests a 96-point, 64-Hermite candidate. Its completed movie will replace this checkpoint after long-horizon validation.
 
 These six-second GIF previews loop automatically in GitHub's README. The corresponding **six-second, 1080p H.264 MP4s** are suitable for inserting into PowerPoint. Movies show only the evolving Euler density or plasma phase-space distribution. Electric fields are saved as separate figures. Each movie uses actual saved solver states, a fixed color scale, and a simulation clock; the Euler snapshot displays density minus its unit background on a labeled symmetric-log scale; objective histories stay in separate figures.
 
@@ -19,6 +19,12 @@ These six-second GIF previews loop automatically in GitHub's README. The corresp
 ![Optimized Euler density evolving toward the target](media/snapshot_euler.gif)
 
 ![Euler initial and final density](media/snapshot_euler_initial_final.png)
+
+Same initial condition, evolved to 1.5T:
+
+![Euler dynamics through 1.5T](media/snapshot_euler_extended.gif)
+
+[Extended PowerPoint movie](media/snapshot_euler_extended.mp4) · [Initial and extended final state](media/snapshot_euler_extended_initial_final.png)
 
 [PowerPoint movie](media/snapshot_euler.mp4) · [Optimized initial velocity](media/snapshot_euler_initial_velocity.png) · [Target and baseline comparison](media/snapshot_euler_comparison.png) · [Loss history](media/snapshot_euler_loss.png)
 
@@ -29,6 +35,20 @@ These six-second GIF previews loop automatically in GitHub's README. The corresp
 ![Euler retention initial and final density](media/retention_euler_initial_final.png)
 
 [PowerPoint movie](media/retention_euler.mp4) · [Target and baseline comparison](media/retention_euler_comparison.png) · [Loss history](media/retention_euler_loss.png)
+
+### Vlasov · final snapshot
+
+![Optimized Vlasov phase space](media/snapshot_vlasov.gif)
+
+![Vlasov initial and final phase space](media/snapshot_vlasov_initial_final.png)
+
+Same initial condition, evolved to 1.5T:
+
+![Vlasov dynamics through 1.5T](media/snapshot_vlasov_extended.gif)
+
+[Extended PowerPoint movie](media/snapshot_vlasov_extended.mp4) · [Initial and extended final state](media/snapshot_vlasov_extended_initial_final.png)
+
+[PowerPoint movie](media/snapshot_vlasov.mp4) · [Electric field](media/snapshot_vlasov_electric_field.png) · [Density](media/snapshot_vlasov_density.png) · [Mean velocity](media/snapshot_vlasov_velocity.png) · [Target and baseline comparison](media/snapshot_vlasov_comparison.png) · [Loss history](media/snapshot_vlasov_loss.png)
 
 ## Run with your own image
 
@@ -46,7 +66,7 @@ python snapshot/euler.py
 
 Edit `IMAGE` and the input parameters at the top of the chosen script. JPG and PNG are supported, including PNG transparency. There are no parsed arguments or main functions: imports, inputs, simulation/optimization, and saved results are visible in order. Every optimizer iteration reports its objective and elapsed time. First-call JAX compilation takes longer than a warm iteration. A bundled FFmpeg binary creates the movies; no separate FFmpeg installation is required. CPU defaults are modest; install an appropriate JAX accelerator wheel to use a GPU.
 
-Image preprocessing preserves aspect ratio, pads the canvas, inverts grayscale, and normalizes the mean. Dark artwork becomes high density. The Euler snapshot places an editable image contrast on a unit-density background; its initial density is held exactly uniform and only the initial velocity is optimized. Euler retention and PIC add a small density floor; Vlasov adds the image as a small perturbation of a positive Maxwellian background and displays `f − background` with an explicitly labeled scale. Colors are display choices rather than three independently simulated channels. The supplied W7-X picture is artwork to reproduce, rather than a W7-X equilibrium.
+Image preprocessing preserves aspect ratio, pads the canvas, inverts grayscale, and normalizes the mean. Dark artwork becomes high density. The Euler snapshot places an editable image contrast on a unit-density background; its initial density is held exactly uniform and only the initial velocity is optimized. Euler retention and PIC add a small density floor; Vlasov adds the image as a small perturbation of a positive Maxwellian background and displays `f − background` with an explicitly labeled scale. All density and phase-space images use jet with fixed color limits. Vlasov perturbations use a symmetric-log scale; PIC uses a linear scale. Plasma movies have no opacity cutoff. Euler retains its display-only cutoff near 5% of the target peak; it never alters dynamics, objectives, or saved physical arrays. Colors are display choices rather than three independently simulated channels. The supplied W7-X picture is artwork to reproduce, rather than a W7-X equilibrium.
 
 ## Resolution and duration
 
@@ -56,8 +76,8 @@ The numerical grids are independent of the input image's pixel dimensions. Chang
 |---|---|---|
 | Euler snapshot | 128 × 128 cells, 352 final-horizon steps | 0.43 sound-crossing times of the unit box |
 | Euler retention | 128 × 128 cells, 192 final-horizon steps | `t = 0.5`, with sound speed 0.45 |
-| Vlasov | 128 spatial Fourier points, 32 Hermite modes, 256 displayed velocity bins | `ωₚₑ t = 60`, domain length 200 |
-| PIC | 64 field cells, 2,048 electrons and 2,048 ions, 256 × 256 phase-space bins | 2,000 snapshot / 2,400 retention steps |
+| Vlasov snapshot / retention | 96 / 160 spatial Fourier points, 64 / 32 Hermite modes, 320 displayed velocity bins | `ωₚₑ t = 60`, domain length 250 |
+| PIC | 64 field cells, 4,096 electrons and 4,096 ions, 256 × 256 phase-space bins | 2,000 snapshot / 2,400 retention steps |
 
 Vlasov velocity bins sample a Hermite expansion: increasing `MODES` raises velocity-space solver resolution, while `VELOCITY_BINS` raises reconstruction resolution. PIC phase-space bins are separate from the field grid and particle count. Its Gaussian deposition spans three phase-space bins to reduce sampling noise; resolving smaller kinetic features requires more particles too. Euler's published grids contain about seven times as many cells as the initial 48 × 48 trials.
 
@@ -77,17 +97,19 @@ A long self-consistent plasma trajectory can mix an arbitrary image beyond recog
 
 Each script writes `results/<mode>_<model>/`:
 
-- `trajectory.mp4` and `trajectory.gif`: density or phase-space dynamics only.
+- `trajectory.mp4` and `trajectory.gif`: density or phase-space dynamics through the optimization time T.
+- `trajectory_extended.mp4` and `trajectory_extended.gif`: the same optimized initial condition evolved to 1.5T. Both versions last six seconds and share color limits; the extension receives no further optimization.
+- `extended_initial_final.png`: initial state and final state at 1.5T.
 - `initial_final.png`: the optimized initial and final density or phase-space states.
 - `electric_field.png`: separate initial/final field profiles and a field history for plasma cases.
 - `density.png` and `velocity.png`: separate velocity-window density and mean-velocity profiles for plasma cases.
 - `comparison.png`: target, optimized initial, baseline final, and optimized final.
 - `loss.png`: objective versus optimization iteration.
-- `results.npz`: target, optimized initial, saved trajectory, baseline, times, objective history, per-frame errors, represented mass, fields, background, image contrast, normalized signal errors, and optimized initial-state arrays.
+- `results.npz`: target, optimized initial, saved trajectory, baseline, times, objective history, per-frame errors, represented mass, fields, background, image contrast, normalized signal errors, horizon-stage histories, display settings, and optimized initial-state arrays.
 
 `parameters_0` is Euler's conservative state or SPECTRAX's complex Hermite–Fourier coefficients. PIC stores full initial particle positions and velocities as `parameters_0` and `parameters_1` (electrons first, then ions). `time_scale` converts saved physical times to the displayed normalized clock. Movies subsample long trajectories without interpolating artificial density states.
 
-Earlier validation examples ran end to end on CPU with directional autodiff and conservation checks. The finer grids below have been benchmarked; their optimized trajectories are being regenerated. Upstream revisions and JAX dependencies are pinned in [requirements.txt](requirements.txt). Increase resolution, integration steps, and optimization iterations together when refining a result; the runtime target is a warm objective/gradient evaluation under ten seconds, rather than a hardware-independent guarantee.
+Completed validation runs check autodiff against directional finite differences, Euler conservation, plasma electric fields, and time-step refinement. Finer retention and PIC fits and a higher-Hermite Vlasov candidate are still running; the gallery identifies the completed resolution. Upstream revisions and JAX dependencies are pinned in [requirements.txt](requirements.txt). Increase resolution, integration steps, and optimization iterations together when refining a result; the runtime target is a warm objective/gradient evaluation under ten seconds, rather than a hardware-independent guarantee.
 
 ## Credits and license
 

@@ -20,6 +20,8 @@ ITERATIONS_PER_HORIZON = (30, 40, 60, 100)
 SOUND_SPEED, VELOCITY_SCALE = 0.45, 0.80
 LEARNING_RATE = 0.015
 OUTPUT = ROOT / "results" / "retention_euler"
+CHECKPOINTS = OUTPUT / "checkpoints"
+CHECKPOINTS.mkdir(parents=True, exist_ok=True)
 
 print("Loading target and preparing the periodic 2D isothermal Euler model...")
 target = load_target(IMAGE, SIZE)
@@ -59,6 +61,12 @@ for horizon, iterations in zip(HORIZONS, ITERATIONS_PER_HORIZON):
     if stage_min_density[-1] <= 0:
         raise FloatingPointError(f"Negative density at retention horizon T={horizon:g}.")
     print(f"  minimum density={stage_min_density[-1]:.6g}, mass drift={stage_mass_drift[-1]:.3g}")
+    np.savez_compressed(
+        CHECKPOINTS / f"T_{horizon:g}.npz", parameters=np.asarray(parameters),
+        history=np.concatenate(history_parts), horizon=horizon, steps=stage_steps,
+        dt=dt, loss=horizon_losses[-1], min_density=stage_min_density[-1],
+        mass_drift=stage_mass_drift[-1],
+    )
 
 T_FINAL = HORIZONS[-1]
 dt = T_FINAL / STEPS
@@ -81,6 +89,15 @@ fine_min_density = float(np.min(fine_frames))
 fine_mass_drift = float(np.max(np.abs(np.asarray(fine_frames).mean(axis=(-2, -1)) - np.asarray(fine_frames[0]).mean())))
 if fine_min_density <= 0:
     raise FloatingPointError("Negative density during the twice-fine Euler replay.")
+extended_steps = round(1.5 * STEPS)
+extended_frames = euler_evolve(conserved(parameters), extended_steps, dt, SOUND_SPEED)
+extended_baseline = euler_evolve(conserved(initial), extended_steps, dt, SOUND_SPEED)
+extended_min_density = float(np.min(extended_frames))
+extended_mass_drift = float(np.max(np.abs(
+    np.asarray(extended_frames).mean(axis=(-2, -1)) - np.asarray(extended_frames[0]).mean()
+)))
+if extended_min_density <= 0:
+    raise FloatingPointError("Negative density during the 1.5T Euler retention trajectory.")
 print(
     f"Euler retention fit finished in {time.time() - start:.1f}s; "
     f"trajectory-average density MSE={horizon_losses[-1]:.6g}; AD/FD={gradient_check_error:.3g}; "
@@ -92,12 +109,16 @@ save_results(
     extent=(0, 2 * jnp.pi, 0, 2 * jnp.pi), labels=("x", "y"),
     title="Isothermal Euler · retention",
     stage_lengths=[len(part) for part in history_parts], stage_times=HORIZONS,
+    extended_frames=extended_frames, extended_times=np.arange(extended_steps + 1) * dt,
+    extended_baseline=extended_baseline,
+    metadata={"extended_min_density": extended_min_density,
+              "extended_mass_drift": extended_mass_drift,
+              "stage_min_density": np.asarray(stage_min_density),
+              "stage_mass_drift": np.asarray(stage_mass_drift),
+              "horizon_final_losses": np.asarray(horizon_losses),
+              "fine_replay_endpoint_rms": fine_replay_rms,
+              "fine_replay_endpoint_max": fine_replay_max,
+              "fine_replay_min_density": fine_min_density,
+              "fine_replay_mass_drift": fine_mass_drift,
+              "gradient_check_error": gradient_check_error},
 )
-archive = np.load(OUTPUT / "results.npz")
-data = {key: archive[key] for key in archive.files}
-data.update(stage_min_density=np.asarray(stage_min_density), stage_mass_drift=np.asarray(stage_mass_drift),
-            horizon_final_losses=np.asarray(horizon_losses),
-            gradient_check_error=gradient_check_error, fine_replay_endpoint_rms=fine_replay_rms,
-            fine_replay_endpoint_max=fine_replay_max, fine_replay_min_density=fine_min_density,
-            fine_replay_mass_drift=fine_mass_drift)
-np.savez_compressed(OUTPUT / "results.npz", **data)

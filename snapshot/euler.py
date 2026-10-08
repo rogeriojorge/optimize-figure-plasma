@@ -21,6 +21,8 @@ SOUND_SPEED, VELOCITY_SCALE = 1.0, 0.80
 IMAGE_CONTRAST = 0.10
 LEARNING_RATE = 0.01
 OUTPUT = ROOT / "results" / "snapshot_euler"
+CHECKPOINTS = OUTPUT / "checkpoints"
+CHECKPOINTS.mkdir(parents=True, exist_ok=True)
 
 print("Loading target and preparing the periodic second-order isothermal Euler model...")
 artwork = load_target(IMAGE, SIZE)
@@ -63,6 +65,12 @@ for horizon, iterations in zip(HORIZONS, ITERATIONS_PER_HORIZON):
     if stage_min_density[-1] <= 0:
         raise FloatingPointError(f"Negative density at snapshot horizon T={horizon:g}.")
     print(f"  minimum density={stage_min_density[-1]:.6g}, mass drift={stage_mass_drift[-1]:.3g}")
+    np.savez_compressed(
+        CHECKPOINTS / f"T_{horizon:g}.npz", parameters=np.asarray(parameters),
+        history=np.concatenate(history_parts), horizon=horizon, steps=stage_steps,
+        dt=dt, loss=horizon_losses[-1], min_density=stage_min_density[-1],
+        mass_drift=stage_mass_drift[-1],
+    )
 
 T_FINAL = HORIZONS[-1]
 dt = T_FINAL / STEPS
@@ -86,6 +94,19 @@ fine_min_density = float(np.min(fine_frames))
 fine_mass_drift = float(np.max(np.abs(np.asarray(fine_frames).mean(axis=(-2, -1)) - np.asarray(fine_frames[0]).mean())))
 if fine_min_density <= 0:
     raise FloatingPointError("Negative density during the twice-fine Euler replay.")
+extended_steps = round(1.5 * STEPS)
+extended_frames = euler_evolve_muscl(
+    conserved(parameters), extended_steps, dt, 1.0 / SIZE, SOUND_SPEED
+)
+extended_baseline = euler_evolve_muscl(
+    conserved(baseline_parameters), extended_steps, dt, 1.0 / SIZE, SOUND_SPEED
+)
+extended_min_density = float(np.min(extended_frames))
+extended_mass_drift = float(np.max(np.abs(
+    np.asarray(extended_frames).mean(axis=(-2, -1)) - np.asarray(extended_frames[0]).mean()
+)))
+if extended_min_density <= 0:
+    raise FloatingPointError("Negative density during the 1.5T Euler snapshot trajectory.")
 print(
     f"Euler snapshot fit finished in {time.time() - start:.1f}s; "
     f"final density MSE={horizon_losses[-1]:.6g}; AD/FD={gradient_check_error:.3g}; "
@@ -98,12 +119,16 @@ save_results(
     title="Isothermal Euler · velocity-designed snapshot",
     density_background=1.0, image_contrast=IMAGE_CONTRAST,
     stage_lengths=[len(part) for part in history_parts], stage_times=HORIZONS,
+    extended_frames=extended_frames, extended_times=np.arange(extended_steps + 1) * dt,
+    extended_baseline=extended_baseline,
+    metadata={"extended_min_density": extended_min_density,
+              "extended_mass_drift": extended_mass_drift,
+              "stage_min_density": np.asarray(stage_min_density),
+              "stage_mass_drift": np.asarray(stage_mass_drift),
+              "horizon_final_losses": np.asarray(horizon_losses),
+              "fine_replay_endpoint_rms": fine_replay_rms,
+              "fine_replay_endpoint_max": fine_replay_max,
+              "fine_replay_min_density": fine_min_density,
+              "fine_replay_mass_drift": fine_mass_drift,
+              "gradient_check_error": gradient_check_error},
 )
-archive = np.load(OUTPUT / "results.npz")
-data = {key: archive[key] for key in archive.files}
-data.update(stage_min_density=np.asarray(stage_min_density), stage_mass_drift=np.asarray(stage_mass_drift),
-            horizon_final_losses=np.asarray(horizon_losses),
-            gradient_check_error=gradient_check_error, fine_replay_endpoint_rms=fine_replay_rms,
-            fine_replay_endpoint_max=fine_replay_max, fine_replay_min_density=fine_min_density,
-            fine_replay_mass_drift=fine_mass_drift)
-np.savez_compressed(OUTPUT / "results.npz", **data)

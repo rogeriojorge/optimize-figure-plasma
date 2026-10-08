@@ -99,9 +99,12 @@ def save_results(target, initial, frames, history, output, parameters=None, time
                  baseline=None, extent=None, labels=('x', 'y'), title='Image optimization',
                  electric_fields=None, baseline_electric_fields=None, time_scale=1.0,
                  time_label='t', field_label='Ex', density_background=None, image_contrast=1.0,
-                 stage_lengths=None, stage_times=None):
-    """Save arrays, separate endpoint/field/loss figures, and dynamics-only movies."""
+                 stage_lengths=None, stage_times=None, plot_threshold=None,
+                 extended_frames=None, extended_times=None, extended_electric_fields=None,
+                 extended_baseline=None, metadata=None):
+    """Save full physical arrays, separate diagnostics, and paired six-second movies."""
     from matplotlib.animation import FFMpegWriter
+    from matplotlib.colors import SymLogNorm
     import imageio_ffmpeg
     import subprocess
     output = Path(output)
@@ -110,10 +113,21 @@ def save_results(target, initial, frames, history, output, parameters=None, time
     baseline = frames if baseline is None else np.asarray(baseline)
     times = np.arange(len(frames)) if times is None else np.asarray(times)
     fields = None if electric_fields is None else np.asarray(electric_fields)
+    extended = None if extended_frames is None else np.asarray(extended_frames)
     if not all(np.isfinite(a).all() for a in (frames, baseline)):
         raise FloatingPointError('Nonfinite simulation output.')
     if fields is not None and (len(fields) != len(frames) or not np.isfinite(fields).all()):
-        raise ValueError('Electric fields must be finite and aligned with the density frames.')
+        raise ValueError('Electric fields must be finite and aligned with density frames.')
+    if extended is not None:
+        extended_times = np.asarray(extended_times)
+        if extended.shape[1:] != frames.shape[1:] or len(extended_times) != len(extended):
+            raise ValueError('Extended times and states must match the standard trajectory grid.')
+        if not np.isfinite(extended).all() or not np.allclose(extended[0], frames[0], rtol=1e-9, atol=1e-11):
+            raise ValueError('Extended trajectory must be finite and start from the same optimized state.')
+        if extended_times[-1] <= times[-1]:
+            raise ValueError('Extended trajectory must continue beyond the optimization horizon.')
+    plot_threshold = (.05 if fields is None else 0.0) if plot_threshold is None else float(plot_threshold)
+    extent = tuple(extent) if extent is not None else (0, target.shape[-1], 0, target.shape[-2])
     clock = times * float(time_scale)
     losses = np.mean((frames-target)**2, axis=(-2, -1))
     data = dict(target=target, initial=initial, frames=frames, baseline=baseline,
@@ -121,45 +135,90 @@ def save_results(target, initial, frames, history, output, parameters=None, time
                 baseline_mse=np.mean((baseline-target)**2, axis=(-2, -1)),
                 frame_mass=frames.mean(axis=(-2, -1)), times=times,
                 time_scale=float(time_scale), image_contrast=float(image_contrast),
+                plot_threshold=plot_threshold, extent=np.asarray(extent),
+                labels=np.asarray(labels), title=np.asarray(title),
+                time_label=np.asarray(time_label), field_label=np.asarray(field_label),
                 signal_mse=losses/float(image_contrast)**2,
                 baseline_signal_mse=np.mean((baseline-target)**2, axis=(-2, -1))/float(image_contrast)**2)
     if stage_lengths is not None:
         if sum(stage_lengths) != len(history) or len(stage_lengths) != len(stage_times):
             raise ValueError('Stage histories must align with horizon times and objective history.')
-        data['stage_lengths'] = np.asarray(stage_lengths)
-        data['stage_times'] = np.asarray(stage_times)
+        data.update(stage_lengths=np.asarray(stage_lengths), stage_times=np.asarray(stage_times))
     if fields is not None:
         data['electric_fields'] = fields
         if baseline_electric_fields is not None:
             data['baseline_electric_fields'] = np.asarray(baseline_electric_fields)
     if density_background is not None:
-        data['density_background'] = np.asarray(density_background)
+        density_background = np.asarray(density_background)
+        data['density_background'] = density_background
+    if extended is not None:
+        data.update(extended_frames=extended, extended_times=extended_times,
+                    extended_frame_mse=np.mean((extended-target)**2, axis=(-2, -1)),
+                    extended_frame_mass=extended.mean(axis=(-2, -1)),
+                    extension_factor=float(extended_times[-1]/times[-1]))
+        if extended_electric_fields is not None:
+            extended_electric_fields = np.asarray(extended_electric_fields)
+            if len(extended_electric_fields) != len(extended) or not np.isfinite(extended_electric_fields).all():
+                raise ValueError('Extended electric fields must be finite and aligned with states.')
+            data['extended_electric_fields'] = extended_electric_fields
+        if extended_baseline is not None:
+            data['extended_baseline'] = np.asarray(extended_baseline)
     if parameters is not None:
         for i, leaf in enumerate(jax.tree_util.tree_leaves(parameters)):
             data[f'parameters_{i}'] = np.asarray(leaf)
+    if metadata:
+        if set(metadata) & set(data):
+            raise ValueError('Metadata cannot override saved physical arrays or display settings.')
+        data.update(metadata)
     np.savez_compressed(output/'results.npz', **data)
     style = {'font.family': 'DejaVu Sans', 'font.size': 12,
              'axes.spines.top': False, 'axes.spines.right': False}
-    vmin = min(target.min(), np.quantile(frames, .001))
-    vmax = max(target.max(), np.quantile(frames, .999))
-    x = np.linspace(extent[0], extent[1], frames.shape[-1], endpoint=False) if extent else np.arange(frames.shape[-1])
-    field_limit = max(np.max(np.abs(fields)), 1e-12) * 1.08 if fields is not None else None
+    all_runs = [frames] if extended is None else [frames, extended]
+    x = np.linspace(extent[0], extent[1], frames.shape[-1], endpoint=False)
     density_label = 'Density' if fields is None else 'f(x, vx)'
-    color_options = dict(cmap='inferno', vmin=vmin, vmax=vmax)
-    if density_background is not None:
-        from matplotlib.colors import SymLogNorm
-        density_background = np.asarray(density_background)
-        limit = max(np.max(np.abs(frames-density_background)), np.max(np.abs(target-density_background)), 1e-12)
-        color_options = dict(cmap='RdBu_r', norm=SymLogNorm(linthresh=.03*limit, linscale=.4, vmin=-limit, vmax=limit))
-        density_label = (f'Density − {float(density_background):g}' if density_background.ndim == 0
-                         else 'f − background') + ' (symlog scale)'
+    def display_values(image):
+        return image if density_background is None else image-density_background
+    reference = display_values(target)
+    if fields is not None:
+        # Keep the vivid jet palette with fixed limits and continuous colors.
+        # No moving opacity threshold is applied to plasma phase space.
+        cmap = plt.get_cmap('jet').copy()
+        limit = max(np.max(np.abs(reference)),
+                    *(np.quantile(np.abs(display_values(run)), .995) for run in all_runs), 1e-12)
+        color_options = dict(cmap=cmap, vmin=0, vmax=limit)
+        if density_background is not None:
+            color_options = dict(cmap=cmap, norm=SymLogNorm(
+                linthresh=.03*limit, linscale=.4, vmin=-limit, vmax=limit))
+            density_label = 'f − background · fixed symlog scale'
+        else:
+            density_label += ' · fixed linear scale'
+    else:
+        cmap = plt.get_cmap('jet').copy()
+        cmap.set_bad('white')
+        color_options = dict(cmap=cmap, vmin=min(target.min(), *(np.quantile(run, .001) for run in all_runs)),
+                             vmax=max(target.max(), *(np.quantile(run, .999) for run in all_runs)))
+        if density_background is not None:
+            limit = max(np.max(np.abs(reference)), *(np.max(np.abs(display_values(run))) for run in all_runs), 1e-12)
+            color_options = dict(cmap=cmap, norm=SymLogNorm(linthresh=.03*limit, linscale=.4, vmin=-limit, vmax=limit))
+            density_label = f'Density − {float(density_background):g} (symlog scale)'
+    cutoff = max(0.0, plot_threshold)*np.max(np.abs(reference))
+    if cutoff:
+        density_label += f' · display cutoff {cutoff:.2g}'
+    def display_alpha(image):
+        values = display_values(image)
+        return 1.0 if cutoff == 0 else np.clip((np.abs(values)-cutoff)/cutoff, 0, 1)
     with plt.rc_context(style):
         def phase(ax, image, caption):
-            artist = ax.imshow(image if density_background is None else image-density_background,
-                               origin='lower', extent=extent, aspect='auto',
-                               interpolation='bilinear', interpolation_stage='data', **color_options)
+            artist = ax.imshow(display_values(image), alpha=display_alpha(image), origin='lower',
+                               extent=extent, aspect='auto', interpolation='bilinear',
+                               interpolation_stage='data', **color_options)
             ax.set(title=caption, xlabel=labels[0], ylabel=labels[1])
             return artist
+        def colorbar(fig, artist, axes):
+            bar = fig.colorbar(artist, ax=axes, shrink=.85, label=density_label)
+            if fields is None and density_background is not None:
+                ticks = np.array([-1, -.1, 0, .1, 1])*limit
+                bar.set_ticks(ticks, labels=[f'{t:.2g}' for t in ticks])
         fig, axes = plt.subplots(1, 4, figsize=(14, 3.8), layout='constrained')
         for ax, image, caption in zip(axes, [target, initial, baseline[-1], frames[-1]],
                 ['Target', 'Optimized initial', 'Baseline final', 'Optimized final']):
@@ -167,27 +226,33 @@ def save_results(target, initial, frames, history, output, parameters=None, time
         fig.suptitle(title, fontweight='bold')
         fig.savefig(output/'comparison.png', dpi=200)
         plt.close(fig)
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), layout='constrained', squeeze=False)
-        for column, i in enumerate([0, len(frames)-1]):
-            artist = phase(axes[0, column], frames[i], f'{"Initial" if i == 0 else "Final"} · {time_label} = {clock[i]:.3g}')
-        bar = fig.colorbar(artist, ax=axes[0, :], shrink=.8, label=density_label)
-        if density_background is not None:
-            ticks = np.array([-1, -.1, 0, .1, 1])*limit
-            bar.set_ticks(ticks, labels=[f'{t:.2g}' for t in ticks])
-        fig.suptitle(title, fontweight='bold')
-        fig.savefig(output/'initial_final.png', dpi=200)
-        plt.close(fig)
+        for run, run_times, name in [(frames, clock, 'initial_final'),
+                                     *(([(extended, extended_times*float(time_scale), 'extended_initial_final')]) if extended is not None else [])]:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), layout='constrained')
+            for ax, i in zip(axes, [0, -1]):
+                artist = phase(ax, run[i], f'{"Initial" if i == 0 else "Final"} · {time_label} = {run_times[i]:.3g}')
+            colorbar(fig, artist, axes)
+            fig.suptitle(title, fontweight='bold')
+            fig.savefig(output/f'{name}.png', dpi=200)
+            plt.close(fig)
         if fields is not None:
-            field_x = np.linspace(extent[0], extent[1], fields.shape[-1], endpoint=False)
+            plot_fields = fields if extended_electric_fields is None else extended_electric_fields
+            plot_clock = clock if extended_electric_fields is None else extended_times*float(time_scale)
+            field_x = np.linspace(extent[0], extent[1], plot_fields.shape[-1], endpoint=False)
+            field_limit = max(np.quantile(np.abs(plot_fields), .995), 1e-12)*1.08
             fig, axes = plt.subplots(2, 1, figsize=(9, 6), layout='constrained')
-            for i, caption, color in [(0, 'Initial', '#64748b'), (-1, 'Final', '#2563eb')]:
+            for i, caption, color in [(0, 'Initial', '#64748b'), (-1, 'At optimization time', '#2563eb')]:
                 axes[0].plot(field_x, fields[i], label=caption, color=color, linewidth=2)
-            axes[0].set(xlabel=labels[0], ylabel=field_label, ylim=(-field_limit, field_limit))
+            if extended_electric_fields is not None:
+                axes[0].plot(field_x, plot_fields[-1], label='At 1.5T', color='#dc2626', linewidth=1.5)
+            axes[0].set(xlabel=labels[0], ylabel=field_label)
             axes[0].legend(frameon=False)
             axes[0].grid(alpha=.15)
-            field_image = axes[1].imshow(fields, origin='lower', aspect='auto', cmap='RdBu_r',
-                extent=(extent[0], extent[1], clock[0], clock[-1]),
+            field_image = axes[1].imshow(plot_fields, origin='lower', aspect='auto', cmap='RdBu_r',
+                extent=(extent[0], extent[1], plot_clock[0], plot_clock[-1]),
                 vmin=-field_limit, vmax=field_limit, interpolation='bilinear')
+            if extended is not None:
+                axes[1].axhline(clock[-1], color='black', linestyle='--', linewidth=1)
             axes[1].set(xlabel=labels[0], ylabel=time_label, title='Electric-field evolution')
             fig.colorbar(field_image, ax=axes[1], label=field_label)
             fig.suptitle(title, fontweight='bold')
@@ -199,11 +264,10 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             weights *= sample_velocity[1]-sample_velocity[0]
             density = np.einsum('tvx,v->tx', frames, weights)
             mean_velocity = np.einsum('tvx,v->tx', frames, weights*sample_velocity)/np.maximum(density, 1e-30)
-            for name, values, ylabel in [
-                    ('density', density, 'Velocity-window integral of f'),
-                    ('velocity', mean_velocity, f'Mean {labels[1]} in velocity window')]:
+            for name, values, ylabel in [('density', density, 'Velocity-window integral of f'),
+                                        ('velocity', mean_velocity, f'Mean {labels[1]} in velocity window')]:
                 fig, ax = plt.subplots(figsize=(8, 3.5), layout='constrained')
-                for i, caption, color in [(0, 'Initial', '#64748b'), (-1, 'Final', '#2563eb')]:
+                for i, caption, color in [(0, 'Initial', '#64748b'), (-1, 'At optimization time', '#2563eb')]:
                     ax.plot(x, values[i], label=caption, color=color, linewidth=2)
                 ax.set(xlabel=labels[0], ylabel=ylabel, title=title)
                 ax.legend(frameon=False)
@@ -228,7 +292,9 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             rho, mx, my = np.asarray(parameters)
             u, v = mx/rho, my/rho
             fig, ax = plt.subplots(figsize=(6, 5), layout='constrained')
-            speed = ax.imshow(np.hypot(u, v), origin='lower', extent=extent, cmap='viridis', aspect='auto')
+            speed_values = np.hypot(u, v)
+            speed = ax.imshow(np.ma.masked_less(speed_values, plot_threshold*speed_values.max()),
+                              origin='lower', extent=extent, cmap=cmap, aspect='auto')
             y = np.linspace(extent[2], extent[3], target.shape[0], endpoint=False)
             stride = max(1, target.shape[0]//16)
             ax.quiver(x[::stride], y[::stride], u[::stride, ::stride], v[::stride, ::stride], color='white', alpha=.7)
@@ -236,31 +302,43 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             fig.colorbar(speed, ax=ax, label='Speed')
             fig.savefig(output/'initial_velocity.png', dpi=200)
             plt.close(fig)
-        fig, axes = plt.subplots(1, 1, figsize=(12.8, 7.2), layout='constrained', squeeze=False)
-        image = phase(axes[0, 0], frames[0], '')
-        bar = fig.colorbar(image, ax=axes[0, 0], shrink=.9, label=density_label)
-        if density_background is not None:
-            ticks = np.array([-1, -.1, 0, .1, 1])*limit
-            bar.set_ticks(ticks, labels=[f'{t:.2g}' for t in ticks])
-        heading = fig.suptitle(title, fontweight='bold', fontsize=20)
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        indices = np.unique(np.linspace(0, len(frames)-1, min(241, len(frames))).astype(int))
-        sequence = np.r_[np.zeros(10, dtype=int), indices, np.full(20, len(frames)-1, dtype=int)]
-        writer = FFMpegWriter(fps=len(sequence)/6.0, codec='libx264', bitrate=-1,
-                             extra_args=['-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-threads', '2'])
-        print(f'Rendering {len(sequence)} dynamics-only frames ...', flush=True)
-        with plt.rc_context({'animation.ffmpeg_path': ffmpeg}):
-            with writer.saving(fig, str(output/'trajectory.mp4'), dpi=150):
-                for count, i in enumerate(sequence):
-                    image.set_data(frames[i] if density_background is None else frames[i]-density_background)
-                    heading.set_text(f'{title}   |   {time_label} = {clock[i]:.3g}')
-                    writer.grab_frame()
-                    if count % 40 == 0:
-                        print(f'  video {count+1}/{len(sequence)}', flush=True)
-        plt.close(fig)
-        subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-i', str(output/'trajectory.mp4'),
-                        '-filter_complex_threads', '2', '-filter_complex', 'fps=10,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
-                        '-threads', '2', '-loop', '0', str(output/'trajectory.gif')], check=True)
+        movie_runs = [(frames, clock, 'trajectory')]
+        if extended is not None:
+            movie_runs.append((extended, extended_times*float(time_scale), 'trajectory_extended'))
+        for run, run_clock, name in movie_runs:
+            fig, ax = plt.subplots(figsize=(12.8, 7.2), layout='constrained')
+            image = phase(ax, run[0], '')
+            colorbar(fig, image, ax)
+            heading = fig.suptitle(title, fontweight='bold', fontsize=20)
+            indices = np.unique(np.linspace(0, len(run)-1, min(241, len(run))).astype(int))
+            sequence = np.r_[np.zeros(10, dtype=int), indices, np.full(20, len(run)-1, dtype=int)]
+            writer = FFMpegWriter(fps=len(sequence)/6.0, codec='libx264', bitrate=-1,
+                extra_args=['-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-threads', '2'])
+            print(f'Rendering {name}: {len(sequence)} dynamics-only frames, six seconds ...', flush=True)
+            fig.set_dpi(150)
+            image.set_animated(True)
+            heading.set_animated(True)
+            with plt.rc_context({'animation.ffmpeg_path': ffmpeg}):
+                with writer.saving(fig, str(output/f'{name}.mp4'), dpi=150):
+                    fig.canvas.draw()
+                    background = fig.canvas.copy_from_bbox(fig.bbox)
+                    for count, i in enumerate(sequence):
+                        image.set_data(display_values(run[i]))
+                        image.set_alpha(display_alpha(run[i]))
+                        suffix = ' · after optimization time' if run_clock[i] > clock[-1]+1e-10 else ''
+                        heading.set_text(f'{title}   |   {time_label} = {run_clock[i]:.3g}{suffix}')
+                        fig.canvas.restore_region(background)
+                        ax.draw_artist(image)
+                        fig.draw_artist(heading)
+                        writer._proc.stdin.write(fig.canvas.buffer_rgba())
+                        if count % 40 == 0:
+                            print(f'  video {count+1}/{len(sequence)}', flush=True)
+            plt.close(fig)
+            subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-i', str(output/f'{name}.mp4'),
+                '-filter_complex_threads', '2', '-filter_complex',
+                'fps=20,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=256[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
+                '-threads', '2', '-loop', '0', str(output/f'{name}.gif')], check=True)
     print(f'Saved {output}: final MSE={losses[-1]:.6g}, mean MSE={losses.mean():.6g}', flush=True)
 
 
@@ -350,7 +428,9 @@ def euler_evolve_muscl(initial_state, steps, dt, dx, sound_speed=1.0):
 
 def make_pic(target, particles, steps, length, velocity_range, seed, kernel_width=1.0,
              timestep_ratio=0.65, debye_ratio=0.7, thermal_speed=0.035,
-             max_speed=0.9, field_grid_points=None):
+             max_speed=0.9, field_grid_points=None, initialization='image',
+             two_stream_drift=0.20, two_stream_thermal=0.05,
+             two_stream_perturbation=5e-5):
     """Build a differentiable 1D PIC x-vx image-fit problem using JAX-in-Cell.
 
     The upstream solver evolves one spatial coordinate and three velocity
@@ -379,13 +459,33 @@ def make_pic(target, particles, steps, length, velocity_range, seed, kernel_widt
         density = jnp.einsum('ni,nj->ji', x_kernel, vx_kernel)
         return density * (size * size) / (particles * 2 * jnp.pi * kernel_width**2)
 
-    weights = np.maximum(np.asarray(target, dtype=np.float64).ravel(), 0)
-    weights /= weights.sum()
     rng = np.random.default_rng(seed)
-    rows, columns = np.divmod(rng.choice(weights.size, size=particles, p=weights), size)
-    jitter = rng.uniform(-0.35, 0.35, size=(particles, 2))
-    vx = ((rows + jitter[:, 0]) / (size - 1) * 2 - 1) * velocity_range
-    x = (columns + jitter[:, 1]) / size * length - length / 2
+    if initialization == 'image':
+        weights = np.maximum(np.asarray(target, dtype=np.float64).ravel(), 0)
+        weights /= weights.sum()
+        rows, columns = np.divmod(rng.choice(weights.size, size=particles, p=weights), size)
+        jitter = rng.uniform(-0.35, 0.35, size=(particles, 2))
+        vx = ((rows + jitter[:, 0]) / (size - 1) * 2 - 1) * velocity_range
+        x = (columns + jitter[:, 1]) / size * length - length / 2
+    elif initialization == 'two_stream':
+        if particles % 2:
+            raise ValueError('Two-stream initialization requires an even particle count.')
+        if not 0 < two_stream_drift < max_speed or two_stream_thermal < 0 or two_stream_perturbation < 0:
+            raise ValueError('Two-stream drift must be subluminal; thermal spread and perturbation must be nonnegative.')
+        if particles % 4:
+            raise ValueError('Quiet two-stream initialization requires a particle count divisible by four.')
+        # Quiet-start particles suppress shot noise while the small seeded mode
+        # grows. Alternate equal counter-streams and paired Gaussian quantiles.
+        x_grid = (np.arange(particles) + 0.5) / particles * length - length / 2
+        x = x_grid + (two_stream_perturbation * length
+                      * np.sin(2 * np.pi * x_grid / length))
+        from scipy.special import ndtri
+        quantiles = ndtri((np.arange(particles // 2) + 0.5) / (particles // 2))
+        thermal = np.repeat(quantiles, 2) * (two_stream_thermal / np.sqrt(2))
+        signs = np.where(np.arange(particles) % 2, -1.0, 1.0)
+        vx = np.clip((two_stream_drift + thermal) * signs, -0.98 * max_speed, 0.98 * max_speed)
+    else:
+        raise ValueError("initialization must be 'image' or 'two_stream'.")
     # Optimize unconstrained latent velocities, but map them smoothly to a
     # subluminal physical speed for the relativistic Boris pusher.
     vx_latent = np.arctanh(np.clip(vx / max_speed, -0.999, 0.999))
@@ -525,8 +625,9 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
     def background_at_velocity(sample_velocity):
         sample_xi = jnp.asarray(sample_velocity)/alpha_x
         return jnp.exp(-sample_xi**2)/(jnp.sqrt(jnp.pi)*alpha_x)
-    encoded_target = (background_at_velocity(velocities)[:, None] + contrast*target
-                      if contrast else target)
+    # Keep the Maxwellian analytically in C0. Projecting its cropped velocity
+    # tail into every Hermite mode creates spurious moments and negative tails.
+    encoded_target = contrast*target if contrast else target
     zero_velocity = jnp.zeros((size_v, 1, 1))
     basis = jnp.stack([
         hermval(xi, jnp.eye(modes)[n]) * jnp.exp(-xi**2) * (jnp.pi * alpha[1] * alpha[2])
@@ -544,19 +645,25 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
         coefficients = dual.T @ encoded_target
     else:
         raise ValueError("projection must be 'moments' or 'svd'")
+    if contrast:
+        coefficients = coefficients.at[0].add(1.0/alpha_product)
     density_scale = 1.0 / (alpha_product*jnp.mean(coefficients[0]))
     coefficients = coefficients * density_scale
-    rms = jnp.sqrt(jnp.mean(coefficients**2, axis=1))
+    coefficient_offset = jnp.zeros((modes, 1), dtype=coefficients.dtype)
+    if contrast:
+        coefficient_offset = coefficient_offset.at[0, 0].set(density_scale/alpha_product)
+    perturbation_coefficients = coefficients-coefficient_offset
+    rms = jnp.sqrt(jnp.mean(perturbation_coefficients**2, axis=1))
     scales = jnp.maximum(rms, 1e-3*jnp.max(rms))
-    initial = coefficients / scales[:, None]
+    initial = perturbation_coefficients / scales[:, None]
     def decode(image, sample_velocity=velocities):
         if contrast:
             return (image-background_at_velocity(sample_velocity)[:, None])/contrast
         return image
-    print(f'Projecting the nonnegative pixel target with {projection} Hermite projection; '
-          'the differentiable loss penalizes negative spectral values.', flush=True)
+    print(f'Projecting the image perturbation with {projection} Hermite moments and an analytic '
+          'Maxwellian background; the differentiable loss penalizes negative spectral values.', flush=True)
     def initial_fourier(parameters):
-        hermite_coefficients = parameters * scales[:, None]
+        hermite_coefficients = coefficient_offset + parameters * scales[:, None]
         spatial_modes = jnp.fft.rfft(hermite_coefficients, axis=-1, norm='forward')
         ck = jnp.zeros((species*modes, 1, size_x//2+1, 1), dtype=spatial_modes.dtype)
         ck = ck.at[:modes, 0, :, 0].set(spatial_modes)
@@ -569,9 +676,12 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
             )
         ck = ck.at[modes, 0, :, 0].set(ion_modes)
         return ck
+    initial_fourier.coefficient_offset = coefficient_offset
+    initial_fourier.coefficient_scales = scales
+    initial_fourier.density_scale = density_scale
 
     def image_from_parameters(parameters):
-        return decode(basis @ (parameters * scales[:, None]) / density_scale)
+        return decode(basis @ (coefficient_offset + parameters * scales[:, None]) / density_scale)
 
     def image_at_velocity(parameters, sample_velocity):
         sample_xi = jnp.asarray(sample_velocity) / alpha_x
@@ -581,10 +691,10 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
             / jnp.sqrt(jnp.pi**3*2.0**n*jax.scipy.special.factorial(n))
             for n in range(modes)
         ], axis=1)
-        return decode(sample_basis @ (parameters * scales[:, None]) / density_scale, sample_velocity)
+        return decode(sample_basis @ (coefficient_offset + parameters * scales[:, None]) / density_scale, sample_velocity)
 
     def run_simulation(parameters, save_count=snapshots, velocity_samples=None, time_step=None):
-        electron_coefficients = parameters * scales[:, None]
+        electron_coefficients = coefficient_offset + parameters * scales[:, None]
         electron_modes = jnp.fft.rfft(electron_coefficients, axis=-1, norm='forward')
         wave_numbers = jnp.arange(size_x//2+1)
         safe_wave_numbers = jnp.maximum(wave_numbers, 1)
