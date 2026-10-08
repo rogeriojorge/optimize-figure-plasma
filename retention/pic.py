@@ -71,14 +71,15 @@ if RESUME and saved_results.exists():
             and "save_stride" in previous.files
             and int(previous["save_stride"]) == SAVE_STRIDE
         )
-        if not compatible:
-            raise ValueError("Cannot resume: saved result does not match the target and PIC settings.")
-        saved_positions = previous["parameters_0"][:PARTICLES, 0]
-        saved_vx = previous["parameters_1"][:PARTICLES, 0] / 299792458.0
-        warm_start = jnp.asarray(np.stack((
-            saved_positions,
-            np.arctanh(np.clip(saved_vx / MAX_SPEED, -0.999999, 0.999999)),
-        ), axis=1), dtype=jnp.float64)
+        if compatible:
+            saved_positions = previous["parameters_0"][:PARTICLES, 0]
+            saved_vx = previous["parameters_1"][:PARTICLES, 0] / 299792458.0
+            warm_start = jnp.asarray(np.stack((
+                saved_positions,
+                np.arctanh(np.clip(saved_vx / MAX_SPEED, -0.999999, 0.999999)),
+            ), axis=1), dtype=jnp.float64)
+        else:
+            print("Existing result has different PIC settings; checking the stage checkpoint.", flush=True)
 if warm_start is not None:
     HORIZONS, STAGE_ITERATIONS, STAGE_RATES = (STEPS,), (100,), (1e-5,)
     print("Resuming from a matching saved PIC result.", flush=True)
@@ -117,8 +118,6 @@ for stage_index, (horizon, iterations, learning_rate) in enumerate(zip(HORIZONS,
     )
     if stage_index == 0:
         initial_parameters = stage_initial
-    if stage_resume is not None and stage_index <= stage_resume[0]:
-        continue
     if optimized_parameters is None and warm_start is not None:
         optimized_parameters = warm_start
     retention_indices = np.linspace(
@@ -127,23 +126,24 @@ for stage_index, (horizon, iterations, learning_rate) in enumerate(zip(HORIZONS,
 
     @jax.checkpoint
     def stage_loss(parameters):
-        output = run_simulation(parameters)
+        output = run_simulation(parameters, sample_indices=retention_indices)
         initial_image = parameter_image(parameters)
         positions = output["positions"][:, :PARTICLES, 0]
         velocities = output["velocities"][:, :PARTICLES, 0]
         sampled_images = jax.lax.map(
             lambda state: image_from_phase_space(state[0], state[1]),
-            (positions[retention_indices], velocities[retention_indices]),
+            (positions, velocities),
         )
         initial_error = jnp.mean((initial_image - target) ** 2)
         trajectory_error = jnp.mean((sampled_images - target[None, :, :]) ** 2)
-        vx_history = output["velocities"][:, :PARTICLES, 0] / 299792458.0
         initial_vx = MAX_SPEED * jnp.tanh(parameters[:, 1])
-        vx_history = jnp.concatenate((initial_vx[None, :], vx_history), axis=0)
-        outside_view = jnp.maximum(jnp.abs(vx_history) - VELOCITY_RANGE, 0.0) / VELOCITY_RANGE
-        viewport_penalty = jnp.mean(outside_view**2)
+        initial_outside = jnp.maximum(jnp.abs(initial_vx) - VELOCITY_RANGE, 0.0) / VELOCITY_RANGE
+        viewport_penalty = (jnp.sum(initial_outside**2) + output["viewport_penalty_sum"])
+        viewport_penalty /= (horizon + 1) * PARTICLES
         return 0.5 * initial_error + 0.5 * trajectory_error + viewport_penalty
 
+    if stage_resume is not None and stage_index <= stage_resume[0]:
+        continue
     starting_point = stage_initial if optimized_parameters is None else optimized_parameters
     start_loss = float(stage_loss(starting_point))
     print(

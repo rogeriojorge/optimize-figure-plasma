@@ -53,6 +53,12 @@ for horizon, iterations in zip(HORIZONS, ITERATIONS_PER_HORIZON):
 
     print(f"Horizon T={horizon:g}: {iterations} Adam iterations")
     parameters, stage_history = optimize(loss, parameters, iterations, LEARNING_RATE)
+    if horizon == HORIZONS[-1]:
+        print("Polishing the final retention horizon with 60 L-BFGS-B iterations")
+        parameters, polish_history = optimize(
+            loss, parameters, 60, LEARNING_RATE, method="l-bfgs-b"
+        )
+        stage_history = np.concatenate((stage_history, polish_history[1:]))
     history_parts.append(stage_history)
     horizon_losses.append(float(loss(parameters)))
     stage_frames = np.asarray(run(parameters))

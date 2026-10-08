@@ -10,7 +10,7 @@
 
 ## Watch the optimized dynamics
 
-The Euler snapshot uses 128 × 128 cells; its retention preview remains the previous 96 × 96 validation. The Vlasov snapshot below uses 160 spatial points and 32 Hermite modes, reconstructed on 320 velocity samples. A scan of higher Hermite resolution and finer PIC sampling is in progress; the snapshot script now tests a 96-point, 64-Hermite candidate. Its completed movie will replace this checkpoint after long-horizon validation.
+Both Euler previews use 128 × 128 cells. The Vlasov snapshot below uses 160 spatial points and 32 Hermite modes, reconstructed on 320 velocity samples. The resolution scan is complete. Optimization of the 96-point, 64-Hermite Vlasov candidate and finer PIC cases is paused; their unfinished results have not replaced completed previews.
 
 These six-second GIF previews loop automatically in GitHub's README. The corresponding **six-second, 1080p H.264 MP4s** are suitable for inserting into PowerPoint. Movies show only the evolving Euler density or plasma phase-space distribution. Electric fields are saved as separate figures. Each movie uses actual saved solver states, a fixed color scale, and a simulation clock; the Euler snapshot displays density minus its unit background on a labeled symmetric-log scale; objective histories stay in separate figures.
 
@@ -33,6 +33,12 @@ Same initial condition, evolved to 1.5T:
 ![Euler density optimized to retain the image](media/retention_euler.gif)
 
 ![Euler retention initial and final density](media/retention_euler_initial_final.png)
+
+Same initial condition, evolved to 1.5T:
+
+![Euler retention dynamics through 1.5T](media/retention_euler_extended.gif)
+
+[Extended PowerPoint movie](media/retention_euler_extended.mp4) · [Initial and extended final state](media/retention_euler_extended_initial_final.png)
 
 [PowerPoint movie](media/retention_euler.mp4) · [Target and baseline comparison](media/retention_euler_comparison.png) · [Loss history](media/retention_euler_loss.png)
 
@@ -83,6 +89,24 @@ Vlasov velocity bins sample a Hermite expansion: increasing `MODES` raises veloc
 
 Each example optimizes short horizons first, then uses the optimized initial condition as the starting guess for a longer-horizon optimization. The simulation still starts at time zero at each stage. This continuation helps avoid tackling the longest, most sensitive trajectory immediately. Euler increases its integration step count with each horizon; Vlasov keeps a fixed time step; PIC increases the number of time steps. Loss plots separate the stages because each horizon defines a different objective.
 
+## Resolution scan
+
+The scan changes solver resolution independently of the displayed image. At the same Vlasov horizon `ωₚₑ t = 20`, the initial projection improves as more Hermite moments represent velocity structure:
+
+| Spatial points | Hermite modes | Initial image MSE | Warm JAX value/gradient |
+|---|---|---|---|
+| 160 | 32 | 1.012 | 2.99 s |
+| 96 | 48 | 0.785 | 2.56 s |
+| 96 | 64 | 0.725 | 3.74 s |
+| 128 | 48 | 0.849 | 3.56 s |
+| 128 | 64 | 0.787 | 4.65 s |
+
+The 96-point, 64-mode candidate has reached its final optimization stage through `ωₚₑ t = 60`; warmed gradients are approximately ten seconds. Refining a fixed initial condition changes the evolved phase-space structure appreciably, so these choices balance representation and cost rather than establish spectral convergence.
+
+PIC scans used 1,024, 2,048, and 4,096 particles per species with 32, 64, and 128 field cells, keeping the physical time step and plasma frequency fixed. Increasing particles reduced initial image MSE from 0.935 to 0.660 to 0.504. Increasing field cells gave less benefit for this image; 64 cells is the working choice. At the full 2,000-step horizon, checkpointing the upstream Boris step reduced the 4,096-particle gradient from over twenty seconds to 8.83 seconds and substantially reduced memory use. The equations and time steps remain those of JAX-in-Cell.
+
+A quiet two-stream initialization was also tested and produced growing electric fields and nonlinear roll-up. It fitted this image less well than sampling particles from the image, so `INITIALIZATION="image"` remains the default; edit it to `"two_stream"` to explore the instability. Timings exclude compilation and vary with hardware and concurrent work.
+
 ## Objective and autodiff
 
 For a snapshot, minimize `mean((f(T) - target)**2)`. For retention, penalize disagreement at the initial time and multiple times over a fixed horizon. Retention cannot win by shortening the simulation. Only initial conditions change; all subsequent states follow the solver. Initial fidelity, negative spectral values, and particles leaving the velocity viewport receive additional penalties where appropriate.
@@ -109,7 +133,7 @@ Each script writes `results/<mode>_<model>/`:
 
 `parameters_0` is Euler's conservative state or SPECTRAX's complex Hermite–Fourier coefficients. PIC stores full initial particle positions and velocities as `parameters_0` and `parameters_1` (electrons first, then ions). `time_scale` converts saved physical times to the displayed normalized clock. Movies subsample long trajectories without interpolating artificial density states.
 
-Completed validation runs check autodiff against directional finite differences, Euler conservation, plasma electric fields, and time-step refinement. Finer retention and PIC fits and a higher-Hermite Vlasov candidate are still running; the gallery identifies the completed resolution. Upstream revisions and JAX dependencies are pinned in [requirements.txt](requirements.txt). Increase resolution, integration steps, and optimization iterations together when refining a result; the runtime target is a warm objective/gradient evaluation under ten seconds, rather than a hardware-independent guarantee.
+Completed validation runs check autodiff against directional finite differences, Euler conservation, plasma electric fields, and time-step refinement. Finer plasma retention and PIC fits and a higher-Hermite Vlasov candidate are paused; the gallery identifies the completed resolution. Upstream revisions and JAX dependencies are pinned in [requirements.txt](requirements.txt). Increase resolution, integration steps, and optimization iterations together when refining a result; the runtime target is a warm objective/gradient evaluation under ten seconds, rather than a hardware-independent guarantee.
 
 ## Credits and license
 

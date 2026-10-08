@@ -69,14 +69,15 @@ if RESUME and saved_results.exists():
             and "save_stride" in previous.files
             and int(previous["save_stride"]) == SAVE_STRIDE
         )
-        if not compatible:
-            raise ValueError("Cannot resume: saved result does not match the target and PIC settings.")
-        saved_positions = previous["parameters_0"][:PARTICLES, 0]
-        saved_vx = previous["parameters_1"][:PARTICLES, 0] / 299792458.0
-        warm_start = jnp.asarray(np.stack((
-            saved_positions,
-            np.arctanh(np.clip(saved_vx / MAX_SPEED, -0.999999, 0.999999)),
-        ), axis=1), dtype=jnp.float64)
+        if compatible:
+            saved_positions = previous["parameters_0"][:PARTICLES, 0]
+            saved_vx = previous["parameters_1"][:PARTICLES, 0] / 299792458.0
+            warm_start = jnp.asarray(np.stack((
+                saved_positions,
+                np.arctanh(np.clip(saved_vx / MAX_SPEED, -0.999999, 0.999999)),
+            ), axis=1), dtype=jnp.float64)
+        else:
+            print("Existing result has different PIC settings; checking the stage checkpoint.", flush=True)
 if warm_start is not None:
     HORIZONS, STAGE_ITERATIONS, STAGE_RATES = (STEPS,), (100,), (1e-5,)
     print("Resuming from a matching saved PIC result.", flush=True)
@@ -86,13 +87,8 @@ stage_resume = None
 checkpoint_file = OUTPUT / "stage_checkpoint.npz"
 if RESUME and warm_start is None and checkpoint_file.exists():
     with np.load(checkpoint_file) as checkpoint:
-        signature_matches = (
-            ("signature" in checkpoint.files and str(checkpoint["signature"]) == checkpoint_signature())
-            or ("signature" not in checkpoint.files
-                and checkpoint["parameters"].shape == (PARTICLES, 2)
-                and str(checkpoint["initialization"]) == INITIALIZATION)
-        )
-        if (signature_matches
+        if ("signature" in checkpoint.files
+                and str(checkpoint["signature"]) == checkpoint_signature()
                 and np.allclose(checkpoint["target"], np.asarray(target), rtol=0, atol=1e-12)):
             completed_stage = HORIZONS.index(int(checkpoint["stage"]))
             expected_history = sum(count + 1 for count in STAGE_ITERATIONS[:completed_stage+1])
@@ -121,20 +117,20 @@ for stage_index, (horizon, iterations, learning_rate) in enumerate(zip(HORIZONS,
     )
     if stage_index == 0:
         initial_parameters = stage_initial
-    if stage_resume is not None and stage_index <= stage_resume[0]:
-        continue
     if optimized_parameters is None and warm_start is not None:
         optimized_parameters = warm_start
 
     @jax.checkpoint
     def stage_loss(parameters):
-        output = run_simulation(parameters)
+        output = run_simulation(parameters, endpoint_only=True)
         final_image = image_from_phase_space(
             output["positions"][-1, :PARTICLES, 0],
             output["velocities"][-1, :PARTICLES, 0],
         )
         return jnp.mean((final_image - target) ** 2)
 
+    if stage_resume is not None and stage_index <= stage_resume[0]:
+        continue
     start_loss = float(stage_loss(stage_initial if optimized_parameters is None else optimized_parameters))
     print(
         f"Optimizing PIC snapshot through {horizon} steps: "

@@ -337,7 +337,7 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             plt.close(fig)
             subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-i', str(output/f'{name}.mp4'),
                 '-filter_complex_threads', '2', '-filter_complex',
-                'fps=20,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=256[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
+                'fps=20,scale=600:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
                 '-threads', '2', '-loop', '0', str(output/f'{name}.gif')], check=True)
     print(f'Saved {output}: final MSE={losses[-1]:.6g}, mean MSE={losses.mean():.6g}', flush=True)
 
@@ -544,29 +544,11 @@ def make_pic(target, particles, steps, length, velocity_range, seed, kernel_widt
         },
     })
 
-    def run_simulation(parameters):
-        electrons = jnp.zeros((particles, 3), dtype=jnp.float64)
-        electrons = electrons.at[:, 0].set(parameters[:, 0])
-        electron_velocities = jnp.zeros_like(electrons).at[:, 0].set(
-            max_speed * jnp.tanh(parameters[:, 1]) * light_speed
-        )
-        return sim.run({'electrons': {'electrons0': {
-            'initial_positions': electrons,
-            'initial_velocities': electron_velocities,
-        }}})
-
-    def initial_electric_field(parameters):
-        # Use the same upstream initialization path as Simulation.run so t=0
-        # electric fields correspond to the optimized particle positions.
-        from jaxincell._routing import build_runtime_parameter_sections
+    def initialize_runtime(electrons, electron_velocities):
         from jaxincell._parameters._species_parameters import resolve_species_references
+        from jaxincell._routing import build_runtime_parameter_sections
         from jaxincell._state_initialization import (
             build_domain_state, initialize_field_state, initialize_particle_state,
-        )
-        electrons = jnp.zeros((particles, 3), dtype=jnp.float64)
-        electrons = electrons.at[:, 0].set(parameters[:, 0])
-        electron_velocities = jnp.zeros_like(electrons).at[:, 0].set(
-            max_speed * jnp.tanh(parameters[:, 1]) * light_speed
         )
         runtime = build_runtime_parameter_sections(
             {
@@ -594,6 +576,97 @@ def make_pic(target, particles, steps, length, velocity_range, seed, kernel_widt
             domain_parameters, solver_parameters, external_parameters,
             domain_state, particle_state,
         )
+        external_parameters = {
+            **external_parameters,
+            'external_electric_field': field_state['external_electric_field'],
+            'external_magnetic_field': field_state['external_magnetic_field'],
+        }
+        return (domain_parameters, solver_parameters, external_parameters,
+                domain_state, particle_state, field_state)
+
+    def run_simulation(parameters, endpoint_only=False, sample_indices=None):
+        electrons = jnp.zeros((particles, 3), dtype=jnp.float64)
+        electrons = electrons.at[:, 0].set(parameters[:, 0])
+        electron_velocities = jnp.zeros_like(electrons).at[:, 0].set(
+            max_speed * jnp.tanh(parameters[:, 1]) * light_speed
+        )
+        if endpoint_only or sample_indices is not None:
+            # The upstream public run method stores every solver state. For
+            # image objectives, use its same initialization and Boris step in
+            # a rematerialized scan that retains only requested states.
+            from jax import lax
+            from jaxincell._algorithms import Boris_step
+            from jaxincell._boundary_conditions import set_BC_particles, set_BC_positions
+            (domain_parameters, solver_parameters, external_parameters,
+             domain_state, particle_state, field_state) = initialize_runtime(electrons, electron_velocities)
+            dx, dt = domain_state['dx'], domain_state['dt']
+            grid, box_size = domain_state['grid'], domain_state['box_size']
+            positions, velocities = particle_state['positions'], particle_state['velocities']
+            charges, masses = particle_state['charges'], particle_state['masses']
+            charge_to_mass = particle_state['charge_to_mass_ratios']
+            pbc_left, pbc_right = domain_parameters['particle_BC_left'], domain_parameters['particle_BC_right']
+            fbc_left, fbc_right = domain_parameters['field_BC_left'], domain_parameters['field_BC_right']
+            positions_plus, velocities, charges, masses, charge_to_mass = set_BC_particles(
+                positions + (dt / 2) * velocities, velocities, charges, masses, charge_to_mass,
+                dx, grid, *box_size, pbc_left, pbc_right,
+            )
+            positions_minus = set_BC_positions(
+                positions - (dt / 2) * velocities, charges, dx, grid, *box_size,
+                pbc_left, pbc_right,
+            )
+            carry = (
+                field_state['fields'][0], field_state['fields'][1], positions_minus,
+                positions, positions_plus, velocities, charges, masses, charge_to_mass,
+            )
+
+            requested = np.asarray([steps - 1] if endpoint_only else sample_indices, dtype=int).ravel()
+            if requested.size == 0 or np.any(requested < 0) or np.any(requested >= steps):
+                raise ValueError('Sample indices must select at least one solver step.')
+            selected = jnp.zeros((len(requested), 2, particles, 3), dtype=jnp.float64)
+
+            def sampled_step(state_samples_and_penalty, index):
+                state, samples, penalty_sum = state_samples_and_penalty
+                next_state, _ = Boris_step(
+                    state, index, solver_parameters, external_parameters, dx, dt, grid, box_size,
+                    pbc_left, pbc_right, fbc_left, fbc_right, solver_parameters['field_solver'],
+                )
+                match = requested == index
+                sample_slot = jnp.argmax(match)
+                samples = lax.cond(
+                    jnp.any(match),
+                    lambda values: values.at[sample_slot].set(
+                        jnp.stack((next_state[3][:particles], next_state[5][:particles]))
+                    ),
+                    lambda values: values,
+                    samples,
+                )
+                vx_ratio = next_state[5][:particles, 0] / light_speed
+                outside = jnp.maximum(jnp.abs(vx_ratio) - velocity_range, 0.0) / velocity_range
+                penalty_sum = penalty_sum + jnp.sum(outside**2)
+                return (next_state, samples, penalty_sum), None
+
+            (_, selected, viewport_penalty_sum), _ = lax.scan(
+                jax.checkpoint(sampled_step), (carry, selected, jnp.asarray(0.0)), jnp.arange(steps)
+            )
+            return {
+                'positions': selected[:, 0],
+                'velocities': selected[:, 1],
+                'viewport_penalty_sum': viewport_penalty_sum,
+            }
+        return sim.run({'electrons': {'electrons0': {
+            'initial_positions': electrons,
+            'initial_velocities': electron_velocities,
+        }}})
+
+    def initial_electric_field(parameters):
+        # Use the same upstream initialization path as Simulation.run so t=0
+        # electric fields correspond to the optimized particle positions.
+        electrons = jnp.zeros((particles, 3), dtype=jnp.float64)
+        electrons = electrons.at[:, 0].set(parameters[:, 0])
+        electron_velocities = jnp.zeros_like(electrons).at[:, 0].set(
+            max_speed * jnp.tanh(parameters[:, 1]) * light_speed
+        )
+        _, _, _, _, _, field_state = initialize_runtime(electrons, electron_velocities)
         return field_state['fields'][0][:, 0]
 
     return initial_parameters, run_simulation, image_from_phase_space, parameter_image, initial_electric_field
