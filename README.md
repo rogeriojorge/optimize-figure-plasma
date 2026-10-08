@@ -8,16 +8,19 @@ Use **JAX autodiff** to find an initial fluid or plasma state that draws your im
 | SPECTRAX · 1D1V | [snapshot/vlasov.py](snapshot/vlasov.py) | [retention/vlasov.py](retention/vlasov.py) |
 | JAX-in-Cell · PIC | [snapshot/pic.py](snapshot/pic.py) | [retention/pic.py](retention/pic.py) |
 
-## Movies and figures
+## Snapshot movies and figures
 
 **Six seconds each.** GIF previews loop inline; download the 1080p H.264 MP4s for PowerPoint. Each pair uses one optimized initial condition, through T and 1.5T. Movies contain density or phase space only; fields and losses are separate figures.
 
 ### Euler · snapshot · 128 × 128 cells
 
-| Through T | Through 1.5T |
-|---|---|
-| ![Euler snapshot dynamics](media/snapshot_euler.gif) | ![Euler snapshot extended dynamics](media/snapshot_euler_extended.gif) |
-| [MP4](media/snapshot_euler.mp4) | [MP4](media/snapshot_euler_extended.mp4) |
+**Through T** · [Download MP4](media/snapshot_euler.mp4)
+
+![Euler snapshot dynamics](media/snapshot_euler.gif)
+
+**Through 1.5T** · [Download MP4](media/snapshot_euler_extended.mp4)
+
+![Euler snapshot extended dynamics](media/snapshot_euler_extended.gif)
 
 | Initial → final density | Optimization loss |
 |---|---|
@@ -25,31 +28,39 @@ Use **JAX autodiff** to find an initial fluid or plasma state that draws your im
 
 [Initial velocity](media/snapshot_euler_initial_velocity.png) · [Target and baseline](media/snapshot_euler_comparison.png) · [Final at 1.5T](media/snapshot_euler_extended_initial_final.png)
 
-### Euler · retention · 128 × 128 cells
-
-| Through T | Through 1.5T |
-|---|---|
-| ![Euler retention dynamics](media/retention_euler.gif) | ![Euler retention extended dynamics](media/retention_euler_extended.gif) |
-| [MP4](media/retention_euler.mp4) | [MP4](media/retention_euler_extended.mp4) |
-
-| Initial → final density | Optimization loss |
-|---|---|
-| ![Euler retention initial and final density](media/retention_euler_initial_final.png) | ![Euler retention loss](media/retention_euler_loss.png) |
-
-[Initial velocity](media/retention_euler_initial_velocity.png) · [Target and baseline](media/retention_euler_comparison.png) · [Final at 1.5T](media/retention_euler_extended_initial_final.png)
-
 ### Vlasov · snapshot · 160 spatial points, 32 Hermite modes
 
-| Through T | Through 1.5T |
-|---|---|
-| ![Vlasov snapshot phase-space dynamics](media/snapshot_vlasov.gif) | ![Vlasov snapshot extended phase-space dynamics](media/snapshot_vlasov_extended.gif) |
-| [MP4](media/snapshot_vlasov.mp4) | [MP4](media/snapshot_vlasov_extended.mp4) |
+**Through T** · [Download MP4](media/snapshot_vlasov.mp4)
+
+![Vlasov snapshot phase-space dynamics](media/snapshot_vlasov.gif)
+
+**Through 1.5T** · [Download MP4](media/snapshot_vlasov_extended.mp4)
+
+![Vlasov snapshot extended phase-space dynamics](media/snapshot_vlasov_extended.gif)
 
 | Initial → final phase space | Optimization loss |
 |---|---|
 | ![Vlasov snapshot initial and final phase space](media/snapshot_vlasov_initial_final.png) | ![Vlasov snapshot loss](media/snapshot_vlasov_loss.png) |
 
 [Electric field](media/snapshot_vlasov_electric_field.png) · [Density](media/snapshot_vlasov_density.png) · [Mean velocity](media/snapshot_vlasov_velocity.png) · [Target and baseline](media/snapshot_vlasov_comparison.png) · [Final at 1.5T](media/snapshot_vlasov_extended_initial_final.png)
+
+## Retention movies and figures
+
+### Euler · retention · 128 × 128 cells
+
+**Through T** · [Download MP4](media/retention_euler.mp4)
+
+![Euler retention dynamics](media/retention_euler.gif)
+
+**Through 1.5T** · [Download MP4](media/retention_euler_extended.mp4)
+
+![Euler retention extended dynamics](media/retention_euler_extended.gif)
+
+| Initial → final density | Optimization loss |
+|---|---|
+| ![Euler retention initial and final density](media/retention_euler_initial_final.png) | ![Euler retention loss](media/retention_euler_loss.png) |
+
+[Initial velocity](media/retention_euler_initial_velocity.png) · [Target and baseline](media/retention_euler_comparison.png) · [Final at 1.5T](media/retention_euler_extended_initial_final.png)
 
 The 64-Hermite Vlasov candidate and finer PIC/retention fits are **paused**. Their scripts are included; unfinished fits do not replace these completed previews.
 
@@ -80,8 +91,11 @@ python snapshot/euler.py
 ### Euler · density in (x, y)
 
 $$
-\partial_t\rho+\nabla\cdot(\rho\mathbf u)=0,\qquad
-\partial_t(\rho\mathbf u)+\nabla\cdot(\rho\mathbf u\otimes\mathbf u+c_s^2\rho\mathbf I)=0.
+\begin{gathered}
+\partial_t\rho+\nabla\cdot(\rho\mathbf u)=0,\\
+\partial_t(\rho\mathbf u)+\nabla\cdot\mathbf F=0,\\
+\mathbf F=\rho\mathbf u\otimes\mathbf u+c_s^2\rho\mathbf I.
+\end{gathered}
 $$
 
 Periodic, compressible, isothermal flow. Snapshot: MUSCL–Hancock/Rusanov, uniform initial density, optimized velocity. Retention: Rusanov/SSP-RK2, optimized density and velocity.
@@ -89,8 +103,10 @@ Periodic, compressible, isothermal flow. Snapshot: MUSCL–Hancock/Rusanov, unif
 ### Vlasov · distribution in (x, v)
 
 $$
-\partial_t f_s+v\partial_x f_s+\frac{q_s}{m_s}E_x\partial_v f_s=C_s[f_s],\qquad
+\begin{gathered}
+\partial_t f_s+v\partial_x f_s+\frac{q_s}{m_s}E_x\partial_v f_s=C_s[f_s],\\
 \partial_x E_x=\frac{1}{\epsilon_0}\sum_s q_s\int f_s\,dv.
+\end{gathered}
 $$
 
 SPECTRAX Hermite–Fourier expansion; electrons and heavy ions with self-consistent fields. An analytic Maxwellian carries a small image perturbation. High-Hermite relaxation is controlled by `COLLISION_RATE`.
@@ -98,9 +114,11 @@ SPECTRAX Hermite–Fourier expansion; electrons and heavy ions with self-consist
 ### PIC · particles and a field grid
 
 $$
-\dot x_p=\frac{p_{x,p}}{\gamma_p m_p},\qquad
-\dot{\mathbf p}_p=q_p\mathbf E(x_p),\qquad
+\begin{gathered}
+\dot x_p=\frac{p_{x,p}}{\gamma_p m_p},\\
+\dot{\mathbf p}_p=q_p\mathbf E(x_p),\\
 \gamma_p=\sqrt{1+\frac{|\mathbf p_p|^2}{m_p^2c^2}}.
+\end{gathered}
 $$
 
 JAX-in-Cell electrostatic field solve and relativistic Boris pusher. The solver uses three velocity components; the image uses (x, vx). Gaussian deposition makes the image loss differentiable. Choose image sampling or `INITIALIZATION='two_stream'`.
@@ -110,9 +128,12 @@ JAX-in-Cell electrostatic field solve and relativistic Boris pusher. The solver 
 Let θ parameterize the initial condition and gθ(t) denote the simulated density or phase-space image; I is the target.
 
 $$
-L_{\rm snapshot}=\langle(g_\theta(T)-I)^2\rangle,\qquad
-L_{\rm retention}=w_0\langle(g_\theta(0)-I)^2\rangle+
-\frac{w_t}{M}\sum_{j=1}^{M}\langle(g_\theta(t_j)-I)^2\rangle.
+\begin{gathered}
+r_\theta(t)=g_\theta(t)-I,\\
+L_{\rm snapshot}=\langle r_\theta(T)^2\rangle,\\
+L_{\rm retention}=w_0\langle r_\theta(0)^2\rangle\\
++\frac{w_t}{M}\sum_{j=1}^{M}\langle r_\theta(t_j)^2\rangle.
+\end{gathered}
 $$
 
 - Short → long horizons; each stage starts from the previous optimized initial condition.

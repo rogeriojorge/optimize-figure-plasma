@@ -418,7 +418,7 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             plt.close(fig)
             subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-i', str(output/f'{name}.mp4'),
                 '-filter_complex_threads', '2', '-filter_complex',
-                'fps=20,scale=600:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
+                'fps=20,scale=480:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=none',
                 '-threads', '2', '-loop', '0', str(output/f'{name}.gif')], check=True)
     print(f'Saved {output}: final MSE={losses[-1]:.6g}, mean MSE={losses.mean():.6g}', flush=True)
 
