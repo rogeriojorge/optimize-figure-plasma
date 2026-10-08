@@ -8,3 +8,4 @@ Pillow>=10
 matplotlib>=3.8
 spectrax @ git+https://github.com/uwplasma/SPECTRAX.git@bf41830ffb044f1ce733aa965f6543e18da791a0
 jaxincell @ git+https://github.com/uwplasma/JAX-in-Cell.git@daa0df0f1686c77cc3e02f8db8978af824babeea
+imageio-ffmpeg>=0.6

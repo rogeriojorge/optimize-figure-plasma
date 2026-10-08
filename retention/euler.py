@@ -13,11 +13,11 @@ sys.path.insert(0, str(ROOT))
 from helpers import euler_evolve, load_target, optimize, save_results  # noqa: E402
 
 IMAGE = ROOT / "W7X-Spulen_Plasma_blau_gelb.jpg"
-SIZE, STEPS = 48, 64
-T_FINAL = 0.10
-SOUND_SPEED, VELOCITY_SCALE = 0.45, 0.22
-ITERATIONS, LEARNING_RATE = 100, 0.015
-SAVED_FRAMES = 9
+SIZE, STEPS = 48, 128
+T_FINAL = 0.50
+SOUND_SPEED, VELOCITY_SCALE = 0.45, 0.80
+ITERATIONS, LEARNING_RATE = 200, 0.015
+SAVED_FRAMES = STEPS + 1
 OUTPUT = ROOT / "results" / "retention_euler"
 
 print("Loading target and preparing the periodic 2D isothermal Euler model...")
@@ -52,6 +52,7 @@ start = time.time()
 parameters, history = optimize(loss, initial, ITERATIONS, LEARNING_RATE)
 all_frames = run(parameters)
 frame_indices = jnp.linspace(0, STEPS, SAVED_FRAMES).astype(jnp.int32)
+baseline_frames = run(initial)[frame_indices]
 frames = all_frames[frame_indices]
 print(
     f"Euler retention fit finished in {time.time() - start:.1f}s; "
@@ -59,4 +60,6 @@ print(
 )
 times = frame_indices * dt
 save_results(target, all_frames[0], frames, history, OUTPUT,
-             parameters=conserved(parameters), times=times)
+             parameters=conserved(parameters), times=times,
+             baseline=baseline_frames, extent=(0, 2*jnp.pi, 0, 2*jnp.pi),
+             labels=('x', 'y'), title='Isothermal Euler · retention')
