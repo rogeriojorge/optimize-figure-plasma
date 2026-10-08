@@ -24,7 +24,7 @@ python snapshot/pic.py
 python retention/pic.py
 ```
 
-Edit the input parameters near the top of a script, including `IMAGE` for your own JPG or PNG. There are no command-line arguments or main functions. Each script announces compilation, reports every optimizer iteration, and saves plots and arrays under `results/`. Install an appropriate JAX GPU wheel first if desired; the defaults also run on CPU. Upstream solver revisions are pinned in `requirements.txt`.
+Use Python 3.11 or newer. Edit the input parameters near the top of a script, including `IMAGE` for your own JPG or PNG. There are no command-line arguments or main functions. Each script announces compilation, reports every optimizer iteration, and saves plots and arrays under `results/`. Install an appropriate JAX GPU wheel first if desired; the defaults also run on CPU. JAX, the optimizer, and upstream solver revisions are pinned in `requirements.txt`.
 
 ## What is optimized?
 
@@ -34,7 +34,9 @@ Images are converted to inverted grayscale (dark artwork becomes high density), 
 
 Euler uses a conservative periodic finite-volume discretization with isothermal pressure, Rusanov fluxes, and SSP-RK2 time integration. The kinetic scripts call [SPECTRAX](https://github.com/uwplasma/SPECTRAX) and [JAX-in-Cell](https://github.com/uwplasma/JAX-in-Cell). Their two image axes represent one position and one velocity, as in a phase-space plot.
 
-`helpers.py` contains shared image preparation, optimization, plotting, and the Euler kernel. Keep the example inputs in their scripts; increase resolution, integration steps, and optimization iterations together when refining a result.
+Each run saves `comparison.png`, `loss.png`, `trajectory.gif`, and `results.npz`. The archive contains the target, optimized initial image, all saved frames, actual simulation times, pixel errors, image mass, and the optimized initial state. `parameters_0` stores Euler’s `(rho, rho*u, rho*v)` array or SPECTRAX’s complex Hermite–Fourier coefficients. For PIC, `parameters_0` and `parameters_1` store full particle positions and velocities (electrons first, then ions).
+
+`helpers.py` contains shared image preparation, optimization, plotting, the Euler kernel, and the two upstream solver adapters. Keep the example inputs in their scripts; increase resolution, integration steps, and optimization iterations together when refining a result.
 
 ## Image credit and license
 

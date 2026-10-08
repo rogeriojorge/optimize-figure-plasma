@@ -1,9 +1,9 @@
-jax>=0.4.35
+jax==0.10.2
 numpy>=1.26
 scipy>=1.12
-diffrax>=0.7.0
-orthax>=0.2.4
-optax>=0.2.4
+diffrax==0.7.2
+orthax==0.2.10
+optax==0.2.8
 Pillow>=10
 matplotlib>=3.8
 spectrax @ git+https://github.com/uwplasma/SPECTRAX.git@bf41830ffb044f1ce733aa965f6543e18da791a0
