@@ -14,11 +14,19 @@ import matplotlib.pyplot as plt
 
 def load_target(image, size, floor=0.05):
     """Letterbox inverted grayscale pixels, add a floor, normalize mean density."""
+    if isinstance(size, (tuple, list)):
+        size_v, size_x = map(int, size)
+        canvas_size = max(size_v, size_x)
+    else:
+        size_v = size_x = int(size)
+        canvas_size = size_x
     image = Image.open(image).convert('RGBA')
     image = Image.alpha_composite(Image.new('RGBA', image.size, 'white'), image).convert('L')
-    image.thumbnail((size, size), Image.Resampling.LANCZOS)
-    canvas = Image.new('L', (size, size), color=255)
-    canvas.paste(image, ((size-image.width)//2, (size-image.height)//2))
+    image.thumbnail((canvas_size, canvas_size), Image.Resampling.LANCZOS)
+    canvas = Image.new('L', (canvas_size, canvas_size), color=255)
+    canvas.paste(image, ((canvas_size-image.width)//2, (canvas_size-image.height)//2))
+    if (size_v, size_x) != (canvas_size, canvas_size):
+        canvas = canvas.resize((size_x, size_v), Image.Resampling.LANCZOS)
     density = floor + (255-np.asarray(canvas, dtype=float))/255
     if density.mean() <= 0:
         raise ValueError("The target has no nonwhite pixels; use a nonblank image or positive floor.")
@@ -32,15 +40,18 @@ def optimize(loss, initial, iterations, learning_rate, method="adam"):
         from jax.flatten_util import ravel_pytree
         flat, unravel = ravel_pytree(initial)
         evaluate = jax.jit(jax.value_and_grad(lambda p: loss(unravel(p))))
-        history, durations = [], []
+        history, durations, cache = [], [], []
         print(f'Compiling JAX objective/gradient for SciPy {method} ...', flush=True)
         def objective(p):
+            if cache and np.array_equal(p, cache[0]):
+                return cache[1], cache[2]
             start = perf_counter()
             value, gradient = evaluate(jnp.asarray(p))
             value, gradient = float(value), np.asarray(gradient)
             if not np.isfinite(value) or not np.isfinite(gradient).all():
                 raise FloatingPointError('Nonfinite objective or gradient: reduce time step or parameter step.')
             durations.append(perf_counter()-start)
+            cache[:] = [np.array(p, copy=True), value, gradient]
             return value, gradient
         def report(p):
             value, _ = objective(p)
@@ -87,8 +98,9 @@ def optimize(loss, initial, iterations, learning_rate, method="adam"):
 def save_results(target, initial, frames, history, output, parameters=None, times=None,
                  baseline=None, extent=None, labels=('x', 'y'), title='Image optimization',
                  electric_fields=None, baseline_electric_fields=None, time_scale=1.0,
-                 time_label='t', field_label='Ex', density_background=None, image_contrast=1.0):
-    """Save arrays, endpoint/loss figures, and dynamics-only presentation movies."""
+                 time_label='t', field_label='Ex', density_background=None, image_contrast=1.0,
+                 stage_lengths=None, stage_times=None):
+    """Save arrays, separate endpoint/field/loss figures, and dynamics-only movies."""
     from matplotlib.animation import FFMpegWriter
     import imageio_ffmpeg
     import subprocess
@@ -111,6 +123,11 @@ def save_results(target, initial, frames, history, output, parameters=None, time
                 time_scale=float(time_scale), image_contrast=float(image_contrast),
                 signal_mse=losses/float(image_contrast)**2,
                 baseline_signal_mse=np.mean((baseline-target)**2, axis=(-2, -1))/float(image_contrast)**2)
+    if stage_lengths is not None:
+        if sum(stage_lengths) != len(history) or len(stage_lengths) != len(stage_times):
+            raise ValueError('Stage histories must align with horizon times and objective history.')
+        data['stage_lengths'] = np.asarray(stage_lengths)
+        data['stage_times'] = np.asarray(stage_times)
     if fields is not None:
         data['electric_fields'] = fields
         if baseline_electric_fields is not None:
@@ -140,7 +157,7 @@ def save_results(target, initial, frames, history, output, parameters=None, time
         def phase(ax, image, caption):
             artist = ax.imshow(image if density_background is None else image-density_background,
                                origin='lower', extent=extent, aspect='auto',
-                               interpolation='nearest', **color_options)
+                               interpolation='bilinear', interpolation_stage='data', **color_options)
             ax.set(title=caption, xlabel=labels[0], ylabel=labels[1])
             return artist
         fig, axes = plt.subplots(1, 4, figsize=(14, 3.8), layout='constrained')
@@ -150,15 +167,9 @@ def save_results(target, initial, frames, history, output, parameters=None, time
         fig.suptitle(title, fontweight='bold')
         fig.savefig(output/'comparison.png', dpi=200)
         plt.close(fig)
-        fig, axes = plt.subplots(2 if fields is not None else 1, 2, figsize=(10, 6 if fields is not None else 4),
-                                 layout='constrained', squeeze=False,
-                                 gridspec_kw={'height_ratios': [3, 1]} if fields is not None else {})
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), layout='constrained', squeeze=False)
         for column, i in enumerate([0, len(frames)-1]):
             artist = phase(axes[0, column], frames[i], f'{"Initial" if i == 0 else "Final"} · {time_label} = {clock[i]:.3g}')
-            if fields is not None:
-                axes[1, column].plot(x, fields[i], color='#2563eb', linewidth=2)
-                axes[1, column].set(xlabel=labels[0], ylabel=field_label, ylim=(-field_limit, field_limit))
-                axes[1, column].grid(alpha=.15)
         bar = fig.colorbar(artist, ax=axes[0, :], shrink=.8, label=density_label)
         if density_background is not None:
             ticks = np.array([-1, -.1, 0, .1, 1])*limit
@@ -166,8 +177,49 @@ def save_results(target, initial, frames, history, output, parameters=None, time
         fig.suptitle(title, fontweight='bold')
         fig.savefig(output/'initial_final.png', dpi=200)
         plt.close(fig)
+        if fields is not None:
+            field_x = np.linspace(extent[0], extent[1], fields.shape[-1], endpoint=False)
+            fig, axes = plt.subplots(2, 1, figsize=(9, 6), layout='constrained')
+            for i, caption, color in [(0, 'Initial', '#64748b'), (-1, 'Final', '#2563eb')]:
+                axes[0].plot(field_x, fields[i], label=caption, color=color, linewidth=2)
+            axes[0].set(xlabel=labels[0], ylabel=field_label, ylim=(-field_limit, field_limit))
+            axes[0].legend(frameon=False)
+            axes[0].grid(alpha=.15)
+            field_image = axes[1].imshow(fields, origin='lower', aspect='auto', cmap='RdBu_r',
+                extent=(extent[0], extent[1], clock[0], clock[-1]),
+                vmin=-field_limit, vmax=field_limit, interpolation='bilinear')
+            axes[1].set(xlabel=labels[0], ylabel=time_label, title='Electric-field evolution')
+            fig.colorbar(field_image, ax=axes[1], label=field_label)
+            fig.suptitle(title, fontweight='bold')
+            fig.savefig(output/'electric_field.png', dpi=200)
+            plt.close(fig)
+            sample_velocity = np.linspace(extent[2], extent[3], frames.shape[-2])
+            weights = np.ones(len(sample_velocity))
+            weights[[0, -1]] = .5
+            weights *= sample_velocity[1]-sample_velocity[0]
+            density = np.einsum('tvx,v->tx', frames, weights)
+            mean_velocity = np.einsum('tvx,v->tx', frames, weights*sample_velocity)/np.maximum(density, 1e-30)
+            for name, values, ylabel in [
+                    ('density', density, 'Velocity-window integral of f'),
+                    ('velocity', mean_velocity, f'Mean {labels[1]} in velocity window')]:
+                fig, ax = plt.subplots(figsize=(8, 3.5), layout='constrained')
+                for i, caption, color in [(0, 'Initial', '#64748b'), (-1, 'Final', '#2563eb')]:
+                    ax.plot(x, values[i], label=caption, color=color, linewidth=2)
+                ax.set(xlabel=labels[0], ylabel=ylabel, title=title)
+                ax.legend(frameon=False)
+                ax.grid(alpha=.15)
+                fig.savefig(output/f'{name}.png', dpi=200)
+                plt.close(fig)
         fig, ax = plt.subplots(figsize=(6, 3.5), layout='constrained')
-        ax.semilogy(np.maximum(history, 1e-16), color='#2563eb', linewidth=2)
+        if stage_lengths is None:
+            ax.semilogy(np.maximum(history, 1e-16), color='#2563eb', linewidth=2)
+        else:
+            offset = 0
+            for count, horizon in zip(stage_lengths, stage_times):
+                ax.semilogy(np.arange(offset, offset+count), np.maximum(history[offset:offset+count], 1e-16),
+                            linewidth=2, label=f'{time_label} max = {horizon:.3g}')
+                offset += count
+            ax.legend(frameon=False, fontsize=8)
         ax.set(xlabel='Optimization iteration', ylabel='Objective', title=title)
         ax.grid(alpha=.15)
         fig.savefig(output/'loss.png', dpi=200)
@@ -184,40 +236,31 @@ def save_results(target, initial, frames, history, output, parameters=None, time
             fig.colorbar(speed, ax=ax, label='Speed')
             fig.savefig(output/'initial_velocity.png', dpi=200)
             plt.close(fig)
-        fig, axes = plt.subplots(2 if fields is not None else 1, 1, figsize=(12.8, 7.2),
-                                 layout='constrained', squeeze=False,
-                                 gridspec_kw={'height_ratios': [3, 1]} if fields is not None else {})
+        fig, axes = plt.subplots(1, 1, figsize=(12.8, 7.2), layout='constrained', squeeze=False)
         image = phase(axes[0, 0], frames[0], '')
         bar = fig.colorbar(image, ax=axes[0, 0], shrink=.9, label=density_label)
         if density_background is not None:
             ticks = np.array([-1, -.1, 0, .1, 1])*limit
             bar.set_ticks(ticks, labels=[f'{t:.2g}' for t in ticks])
-        if fields is not None:
-            line, = axes[1, 0].plot(x, fields[0], color='#2563eb', linewidth=2)
-            axes[1, 0].set(xlabel=labels[0], ylabel=field_label, ylim=(-field_limit, field_limit),
-                           xlim=(x[0], x[-1]))
-            axes[1, 0].grid(alpha=.15)
         heading = fig.suptitle(title, fontweight='bold', fontsize=20)
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        writer = FFMpegWriter(fps=20, codec='libx264', bitrate=-1,
-                             extra_args=['-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'])
         indices = np.unique(np.linspace(0, len(frames)-1, min(241, len(frames))).astype(int))
         sequence = np.r_[np.zeros(10, dtype=int), indices, np.full(20, len(frames)-1, dtype=int)]
+        writer = FFMpegWriter(fps=len(sequence)/6.0, codec='libx264', bitrate=-1,
+                             extra_args=['-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-threads', '2'])
         print(f'Rendering {len(sequence)} dynamics-only frames ...', flush=True)
         with plt.rc_context({'animation.ffmpeg_path': ffmpeg}):
             with writer.saving(fig, str(output/'trajectory.mp4'), dpi=150):
                 for count, i in enumerate(sequence):
                     image.set_data(frames[i] if density_background is None else frames[i]-density_background)
-                    if fields is not None:
-                        line.set_ydata(fields[i])
                     heading.set_text(f'{title}   |   {time_label} = {clock[i]:.3g}')
                     writer.grab_frame()
                     if count % 40 == 0:
                         print(f'  video {count+1}/{len(sequence)}', flush=True)
         plt.close(fig)
         subprocess.run([ffmpeg, '-y', '-loglevel', 'error', '-i', str(output/'trajectory.mp4'),
-                        '-filter_complex', 'fps=10,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
-                        '-loop', '0', str(output/'trajectory.gif')], check=True)
+                        '-filter_complex_threads', '2', '-filter_complex', 'fps=10,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=4',
+                        '-threads', '2', '-loop', '0', str(output/'trajectory.gif')], check=True)
     print(f'Saved {output}: final MSE={losses[-1]:.6g}, mean MSE={losses.mean():.6g}', flush=True)
 
 
@@ -307,7 +350,7 @@ def euler_evolve_muscl(initial_state, steps, dt, dx, sound_speed=1.0):
 
 def make_pic(target, particles, steps, length, velocity_range, seed, kernel_width=1.0,
              timestep_ratio=0.65, debye_ratio=0.7, thermal_speed=0.035,
-             max_speed=0.9):
+             max_speed=0.9, field_grid_points=None):
     """Build a differentiable 1D PIC x-vx image-fit problem using JAX-in-Cell.
 
     The upstream solver evolves one spatial coordinate and three velocity
@@ -320,6 +363,9 @@ def make_pic(target, particles, steps, length, velocity_range, seed, kernel_widt
     size = target.shape[0]
     if target.ndim != 2 or target.shape[1] != size:
         raise ValueError('PIC phase-space fitting requires a square image target.')
+    field_grid_points = size if field_grid_points is None else int(field_grid_points)
+    if field_grid_points < 4:
+        raise ValueError('PIC field grid requires at least four spatial cells.')
     light_speed = 299792458.0
     dx, dv = length / size, 2 * velocity_range / (size - 1)
 
@@ -354,14 +400,15 @@ def make_pic(target, particles, steps, length, velocity_range, seed, kernel_widt
     )
     print(
         f'Preparing JAX-in-Cell PIC: {particles} electrons + {particles} ions, '
-        f'{size} grid cells, {steps} steps; image axes are x (horizontal) and vx (vertical).',
+        f'{field_grid_points} field cells, {size}x{size} phase-space bins, {steps} steps; '
+        'image axes are x (horizontal) and vx (vertical).',
         flush=True,
     )
     sim = Simulation({
         'domain_parameters': {
             'length': length,
             'total_steps': steps,
-            'number_grid_points': size,
+            'number_grid_points': field_grid_points,
             'timestep_over_spatialstep_times_c': timestep_ratio,
         },
         'solver_parameters': {
@@ -462,9 +509,9 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
     from orthax.hermite import hermval
 
     target = jnp.asarray(target)
-    size = target.shape[0]
-    if target.ndim != 2 or target.shape[1] != size:
-        raise ValueError('Vlasov phase-space fitting requires a square image target.')
+    if target.ndim != 2:
+        raise ValueError('Vlasov phase-space fitting requires a 2D image target.')
+    size_v, size_x = target.shape
     species, modes = 2, hermite_modes
     alpha_e = jnp.array([alpha_x, 1.0, 1.0])
     alpha_i = alpha_e / jnp.sqrt(ion_mass)
@@ -473,14 +520,14 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
     ion_product = jnp.prod(alpha_i)
     charges = jnp.array([-1.0, 1.0])
     cyclotron = jnp.array([1.0, 1.0/ion_mass])
-    velocities = jnp.linspace(-velocity_range, velocity_range, size)
+    velocities = jnp.linspace(-velocity_range, velocity_range, size_v)
     xi = velocities / alpha_x
     def background_at_velocity(sample_velocity):
         sample_xi = jnp.asarray(sample_velocity)/alpha_x
         return jnp.exp(-sample_xi**2)/(jnp.sqrt(jnp.pi)*alpha_x)
     encoded_target = (background_at_velocity(velocities)[:, None] + contrast*target
                       if contrast else target)
-    zero_velocity = jnp.zeros((size, 1, 1))
+    zero_velocity = jnp.zeros((size_v, 1, 1))
     basis = jnp.stack([
         hermval(xi, jnp.eye(modes)[n]) * jnp.exp(-xi**2) * (jnp.pi * alpha[1] * alpha[2])
         / jnp.sqrt(jnp.pi**3 * 2.0**n * jax.scipy.special.factorial(n))
@@ -489,11 +536,11 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
     if projection == 'svd':
         coefficients = jnp.linalg.pinv(basis, rtol=1e-4) @ encoded_target
     elif projection == 'moments':
-        weights = jnp.ones(size).at[0].set(0.5).at[-1].set(0.5)
+        weights = jnp.ones(size_v).at[0].set(0.5).at[-1].set(0.5)
         dual = jnp.stack([
             hermval(xi, jnp.eye(modes)[n]) / jnp.sqrt(2.0**n * jax.scipy.special.factorial(n))
             for n in range(modes)
-        ], axis=1) * (2*velocity_range/(size-1)/alpha_x) * weights[:, None]
+        ], axis=1) * (2*velocity_range/(size_v-1)/alpha_x) * weights[:, None]
         coefficients = dual.T @ encoded_target
     else:
         raise ValueError("projection must be 'moments' or 'svd'")
@@ -511,7 +558,7 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
     def initial_fourier(parameters):
         hermite_coefficients = parameters * scales[:, None]
         spatial_modes = jnp.fft.rfft(hermite_coefficients, axis=-1, norm='forward')
-        ck = jnp.zeros((species*modes, 1, size//2+1, 1), dtype=spatial_modes.dtype)
+        ck = jnp.zeros((species*modes, 1, size_x//2+1, 1), dtype=spatial_modes.dtype)
         ck = ck.at[:modes, 0, :, 0].set(spatial_modes)
         ion_modes = jnp.zeros_like(spatial_modes[0])
         if neutral_initial:
@@ -536,17 +583,17 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
         ], axis=1)
         return decode(sample_basis @ (parameters * scales[:, None]) / density_scale, sample_velocity)
 
-    def run_simulation(parameters, save_count=snapshots):
+    def run_simulation(parameters, save_count=snapshots, velocity_samples=None, time_step=None):
         electron_coefficients = parameters * scales[:, None]
         electron_modes = jnp.fft.rfft(electron_coefficients, axis=-1, norm='forward')
-        wave_numbers = jnp.arange(size//2+1)
+        wave_numbers = jnp.arange(size_x//2+1)
         safe_wave_numbers = jnp.maximum(wave_numbers, 1)
         electric = (1j*alpha_product*electron_modes[0]*domain_length
                     /(2*jnp.pi*safe_wave_numbers*cyclotron[0]))
         electric = electric.at[0].set(0.0)
         if neutral_initial:
             electric = jnp.zeros_like(electric)
-        initial_fields = jnp.zeros((6, 1, size//2+1, 1), dtype=jnp.complex128)
+        initial_fields = jnp.zeros((6, 1, size_x//2+1, 1), dtype=jnp.complex128)
         initial_fields = initial_fields.at[0, 0, :, 0].set(electric)
         result = simulation(
             {'Ck_0': initial_fourier(parameters), 'Fk_0': initial_fields,
@@ -555,22 +602,34 @@ def make_vlasov(target, snapshots, final_time, dt, velocity_range=4.0,
              'Omega_cs': cyclotron, 'nu': collision_rate, 'D': 0.0,
              'mi_me': ion_mass, 'Ti_Te': 0.0,
              't_max': final_time, 'ode_tolerance': 1e-5},
-            Nx=size, Ny=1, Nz=1, Nn=modes, Nm=1, Np=1, Ns=species,
-            timesteps=save_count, dt=dt, solver=Dopri5(), adaptive_time_step=False,
+            Nx=size_x, Ny=1, Nz=1, Nn=modes, Nm=1, Np=1, Ns=species,
+            timesteps=save_count, dt=dt if time_step is None else time_step,
+            solver=Dopri5(), adaptive_time_step=False,
         )
         ck = result['Ck']
         coefficients = ck[:, :modes]
         distribution = inverse_HF_transform(
-            coefficients, modes, 1, 1, size, 1, 1,
+            coefficients, modes, 1, 1, size_x, 1, 1,
             velocities[:, None, None]/alpha_x, zero_velocity, zero_velocity,
         )[:, 0, :, 0, :, 0, 0].transpose(0, 2, 1)
         distribution = distribution * (jnp.pi*alpha_e[1]*alpha_e[2]) / density_scale
         electric_field = jnp.fft.irfft(result['Fk'][:, 0, 0, :, 0],
-                                       n=size, axis=-1, norm='forward')
+                                       n=size_x, axis=-1, norm='forward')
+        if velocity_samples is not None:
+            sample_velocities = jnp.asarray(velocity_samples)
+            wide_distribution = inverse_HF_transform(
+                coefficients, modes, 1, 1, size_x, 1, 1,
+                sample_velocities[:, None, None]/alpha_x,
+                jnp.zeros((len(sample_velocities), 1, 1)),
+                jnp.zeros((len(sample_velocities), 1, 1)),
+            )[:, 0, :, 0, :, 0, 0].transpose(0, 2, 1)
+            wide_distribution *= (jnp.pi*alpha_e[1]*alpha_e[2]) / density_scale
+            return result['time'], distribution, electric_field, wide_distribution
         return result['time'], distribution, electric_field
 
     print(
-        f'Preparing self-consistent SPECTRAX 1D1V: {size}×{size}, {modes} Hermite modes, '
+        f'Preparing self-consistent SPECTRAX 1D1V: Nx={size_x}, Nv={size_v}, '
+        f'{modes} Hermite modes, '
         f'electrons + {ion_mass:g}×-mass ions, Lx={domain_length:g}, t={final_time:g}, '
         f'ν={collision_rate:g}; image axes x,vx.', flush=True,
     )
